@@ -1,7 +1,7 @@
 # transRNA Pipeline v1.2
 
 Paired-end RNA-seq pipeline: raw reads → filtering → taxonomy → plots.  
-Datasets: **RJ** (Royal Jelly) and **ST** (Systemic larval tissue), *Apis mellifera*.
+Datasets: **RJ** (Royal Jelly) and **ST** (Systemic larval tissue), *Apis mellifera* by default or to be selected by user.
 
 ---
 
