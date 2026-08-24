@@ -28,6 +28,7 @@ Column sources (per sample, in report order):
   % of transRNAs with >=5 duplicates       <- reinflated_ge5 / merged_reads * 100
 """
 
+import csv
 import glob
 import re
 import sys
@@ -50,11 +51,19 @@ STARLOG_RE  = re.compile(r"^(.+)_Log\.final\.out$")
 MATE_RE     = re.compile(r"_[12]$")
 
 
-def infer_group(sample: str) -> str:
-    s = sample.upper()
-    if s.startswith("RJ"): return "RJ"
-    if s.startswith("T"):  return "ST"
-    return "unknown"
+def load_samplesheet(path: str) -> dict:
+    """Return {sample: group} from a sample,group,fastq_1,fastq_2 sample sheet."""
+    mapping = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            mapping[row["sample"].strip()] = row["group"].strip()
+    return mapping
+
+
+def infer_group(sample: str, sample_to_group: dict) -> str:
+    # Some callers pass a mate-suffixed field (e.g. "RJ1_1"); strip it before lookup.
+    base = MATE_RE.sub("", sample)
+    return sample_to_group.get(base, "unknown")
 
 
 def pct(numerator, denominator, decimals=2):
@@ -117,7 +126,11 @@ def main():
     ap.add_argument("--output",         required=True)
     ap.add_argument("--summary-output", default="dataset_summary_report.tsv")
     ap.add_argument("--virus-output",   default="virus_exclusion_report.tsv")
+    ap.add_argument("--samplesheet",    required=True,
+                     help="sample,group,fastq_1,fastq_2 sample sheet")
     args = ap.parse_args()
+
+    sample_to_group = load_samplesheet(args.samplesheet)
 
     seqkit_data     = defaultdict(dict)
     trimmed_both    = {}   # total reads both mates (denominator for % columns)
@@ -190,7 +203,7 @@ def main():
                     blast_unique[sample] += int(row.get("unique_queries", 0))
 
                 virus_rows.append({
-                    "Dataset": infer_group(raw_sample),
+                    "Dataset": infer_group(raw_sample, sample_to_group),
                     "Sample":  raw_sample,
                     "Tool":    tool,
                     "Virus reads excluded": rm_v,
@@ -226,7 +239,7 @@ def main():
 
         rows.append({
             "Sample":                                        sample,
-            "Group":                                         infer_group(sample),
+            "Group":                                         infer_group(sample, sample_to_group),
             "Raw reads":                                     raw,
             "Trimmed":                                       trimmed,
             "STAR mapped %":                                 star_mapped_pct.get(sample, 0.0),
@@ -256,7 +269,7 @@ def main():
 
     # ── Dataset summary ───────────────────────────────────────────────────────
     summary_rows = []
-    for grp in ["RJ", "ST"]:
+    for grp in sorted(df["Group"].unique()):
         sub = df[df["Group"] == grp]
         if sub.empty:
             continue

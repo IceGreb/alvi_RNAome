@@ -12,6 +12,8 @@ data/processed/
 results/rnaseq_outputs/
 results/metagenomics_outputs/
 
+# User-provided sample sheet (paths/groups are specific to each run)
+workflow/transRNA_pipeline/samples.csv
+
 # OS clutter
 .DS_Store
-EOF

@@ -6,9 +6,17 @@ nextflow.enable.dsl = 2
   transRNA Pipeline  v1.2
   Paired-end RNA-seq → filtering → taxonomy → final transRNA identification
 
-  Datasets:
-    RJ — Royal Jelly           (RJ1, RJ2, RJ3)
-    ST — Systemic larval tissue (T1GMN, T4GMN, TA1, TB1, TC1, TD1)
+  Samples and groups are defined entirely by the sample sheet (see
+  params.sample_sheet / samples.csv: sample,group,fastq_1,fastq_2). Any
+  number of groups, with any labels, is supported. group is optional — a
+  sample with no group is treated as its own group (see resolveGroup()).
+
+  Sample sheet parsing/validation uses the nf-schema plugin against
+  assets/schema_input.json, matching how current nf-core pipelines (e.g.
+  nf-core/mag) read their --input samplesheet. Every sample's resolved
+  metadata (id, group) travels through the pipeline as a Groovy Map
+  ("meta") attached to each channel item — e.g. tuple(meta, reads) — rather
+  than as separate positional (sample, group) tuple elements.
 
   Key design notes:
     • Read counts reported at EVERY step (raw → trimmed → STAR → bbsplit ×3)
@@ -24,18 +32,19 @@ nextflow.enable.dsl = 2
 ================================================================================
 */
 
+include { samplesheetToList } from 'plugin/nf-schema'
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-def rawDir(sample, group) {
-    return group == "RJ"
-        ? "${params.raw_dir_rj}/${sample}"
-        : "${params.raw_dir_st}/${sample}"
+def isBlank(v) {
+    return v == null || v == [] || (v instanceof String && v.trim() == "")
 }
 
-def sampleChannel() {
-    Channel.fromPath(params.sample_sheet)
-        .splitCsv(header: true, strip: true)
-        .map { row -> tuple(row.sample.trim(), row.group.trim()) }
+// group is optional in the schema; a sample with no group becomes its own
+// group, so every downstream per-group summary/plot still has something to
+// key on without any pipeline logic needing to special-case "no group".
+def resolveGroup(meta) {
+    return isBlank(meta.group) ? meta.id : meta.group
 }
 
 // ============================================================================
@@ -43,98 +52,97 @@ def sampleChannel() {
 // ============================================================================
 
 process COUNT_RAW {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/01_raw", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group), path("${sample}_raw_stats.tsv")
+    input:  tuple val(meta), path(fastq_1), path(fastq_2)
+    output: tuple val(meta), path("${meta.id}_raw_stats.tsv")
     script:
-    def dir = rawDir(sample, group)
     """
     seqkit stats -T -j ${task.cpus} \
-        ${dir}/${sample}_1.fq.gz \
-        ${dir}/${sample}_2.fq.gz \
-        > ${sample}_raw_stats.tsv
+        ${fastq_1} \
+        ${fastq_2} \
+        > ${meta.id}_raw_stats.tsv
     """
 }
 
 process COUNT_TRIMMED {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/02_trimmed", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group), path("${sample}_trimmed_stats.tsv")
+    input:  val(meta)
+    output: tuple val(meta), path("${meta.id}_trimmed_stats.tsv")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.trimmed_dir}/${sample}_1_trimmed.fq.gz \
-        ${params.trimmed_dir}/${sample}_2_trimmed.fq.gz \
-        > ${sample}_trimmed_stats.tsv
+        ${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz \
+        ${params.trimmed_dir}/${meta.id}_2_trimmed.fq.gz \
+        > ${meta.id}_trimmed_stats.tsv
     """
 }
 
 process COUNT_STAR_UNMAPPED {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/03_star", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group),
-                  path("${sample}_star_unmapped_stats.tsv"),
-                  path("${sample}_Log.final.out")
+    input:  val(meta)
+    output: tuple val(meta),
+                  path("${meta.id}_star_unmapped_stats.tsv"),
+                  path("${meta.id}_Log.final.out")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.star_dir}/${sample}/${sample}_Unmapped.out.mate1 \
-        ${params.star_dir}/${sample}/${sample}_Unmapped.out.mate2 \
-        > ${sample}_star_unmapped_stats.tsv
+        ${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate1 \
+        ${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate2 \
+        > ${meta.id}_star_unmapped_stats.tsv
 
-    cp ${params.star_dir}/${sample}/Log.final.out \
-       ${sample}_Log.final.out
+    cp ${params.star_dir}/${meta.id}/Log.final.out \
+       ${meta.id}_Log.final.out
     """
 }
 
 process COUNT_BBSPLIT_HOST {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/04a_bbsplit_host", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group), path("${sample}_bbsplit_host_stats.tsv")
+    input:  val(meta)
+    output: tuple val(meta), path("${meta.id}_bbsplit_host_stats.tsv")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.bbsplit_host_dir}/Filtered_${sample}_2MM_bbsplit_clean1.fq \
-        ${params.bbsplit_host_dir}/Filtered_${sample}_2MM_bbsplit_clean2.fq \
-        > ${sample}_bbsplit_host_stats.tsv
+        ${params.bbsplit_host_dir}/Filtered_${meta.id}_2MM_bbsplit_clean1.fq \
+        ${params.bbsplit_host_dir}/Filtered_${meta.id}_2MM_bbsplit_clean2.fq \
+        > ${meta.id}_bbsplit_host_stats.tsv
     """
 }
 
 process COUNT_BBSPLIT_VIRUS {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/04b_bbsplit_virus", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group), path("${sample}_bbsplit_virus_stats.tsv")
+    input:  val(meta)
+    output: tuple val(meta), path("${meta.id}_bbsplit_virus_stats.tsv")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.bbsplit_virus_dir}/Clean_${sample}_2MM_bbsplit_1.fq \
-        ${params.bbsplit_virus_dir}/Clean_${sample}_2MM_bbsplit_2.fq \
-        > ${sample}_bbsplit_virus_stats.tsv
+        ${params.bbsplit_virus_dir}/Clean_${meta.id}_2MM_bbsplit_1.fq \
+        ${params.bbsplit_virus_dir}/Clean_${meta.id}_2MM_bbsplit_2.fq \
+        > ${meta.id}_bbsplit_virus_stats.tsv
     """
 }
 
 process COUNT_BBSPLIT_MAGS {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/05_no_mags", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group), path("${sample}_noMAGs_stats.tsv")
+    input:  val(meta)
+    output: tuple val(meta), path("${meta.id}_noMAGs_stats.tsv")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.bbsplit_mags_dir}/no_MAGs_${sample}_2MM_clean1.fq \
-        ${params.bbsplit_mags_dir}/no_MAGs_${sample}_2MM_clean2.fq \
-        > ${sample}_noMAGs_stats.tsv
+        ${params.bbsplit_mags_dir}/no_MAGs_${meta.id}_2MM_clean1.fq \
+        ${params.bbsplit_mags_dir}/no_MAGs_${meta.id}_2MM_clean2.fq \
+        > ${meta.id}_noMAGs_stats.tsv
     """
 }
 
@@ -178,20 +186,20 @@ process MAKE_READS_POSTTRIM_TAB {
 // =============================================================================
 
 process COLLAPSE_READS {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'med'
     publishDir "${params.outdir}/collapsed", mode: 'copy'
     input:
-    tuple val(sample), val(group),
+    tuple val(meta),
           path(blast1_tsv),
           path(blast2_tsv),
           path(kraken_tsv)
     output:
-    tuple val(sample), val(group),
-          path("${sample}_merged_duplicated.detail.txt"),
-          path("${sample}_merged_collapsed_clean.fq"),
-          path("${sample}_merged.fq"),
-          path("${sample}_collapse_stats.tsv")
+    tuple val(meta),
+          path("${meta.id}_merged_duplicated.detail.txt"),
+          path("${meta.id}_merged_collapsed_clean.fq"),
+          path("${meta.id}_merged.fq"),
+          path("${meta.id}_collapse_stats.tsv")
     script:
     """
     # ── Extract passing IDs from BLAST filtered TSVs (col 1, no header) ──────
@@ -203,26 +211,26 @@ process COLLAPSE_READS {
 
     # ── Fetch sequences from trimmed reads ────────────────────────────────────
     seqkit grep -j ${task.cpus} -f blast1_ids.txt \
-        ${params.trimmed_dir}/${sample}_1_trimmed.fq.gz > blast1_passing.fq
+        ${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz > blast1_passing.fq
     seqkit grep -j ${task.cpus} -f blast2_ids.txt \
-        ${params.trimmed_dir}/${sample}_2_trimmed.fq.gz > blast2_passing.fq
+        ${params.trimmed_dir}/${meta.id}_2_trimmed.fq.gz > blast2_passing.fq
     seqkit grep -j ${task.cpus} -f kraken_ids.txt \
-        ${params.trimmed_dir}/${sample}_1_trimmed.fq.gz > kraken_passing.fq
+        ${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz > kraken_passing.fq
 
     # ── Merge and collapse ────────────────────────────────────────────────────
     cat blast1_passing.fq blast2_passing.fq kraken_passing.fq \
-        > ${sample}_merged.fq
+        > ${meta.id}_merged.fq
 
     seqkit rmdup -s \
         -j ${task.cpus} \
-        -o ${sample}_merged_collapsed_clean.fq \
+        -o ${meta.id}_merged_collapsed_clean.fq \
         -d /dev/null \
-        -D ${sample}_merged_duplicated.detail.txt \
-        ${sample}_merged.fq
+        -D ${meta.id}_merged_duplicated.detail.txt \
+        ${meta.id}_merged.fq
 
     # ── Collapse summary ──────────────────────────────────────────────────────
-    MERGED_READS=\$(awk 'END{print NR/4}' ${sample}_merged.fq)
-    python3 ${projectDir}/bin/collapse_stats.py ${sample} ${params.min_occ} \${MERGED_READS}
+    MERGED_READS=\$(awk 'END{print NR/4}' ${meta.id}_merged.fq)
+    python3 ${projectDir}/bin/collapse_stats.py ${meta.id} ${params.min_occ} \${MERGED_READS}
     """
 }
 
@@ -242,37 +250,37 @@ process COLLAPSE_READS {
 // ============================================================================
 
 process ANNOTATE_KRAKEN {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'med'
     //publishDir "${params.outdir}/kraken_annotated", mode: 'copy'
-    input:  tuple val(sample), val(group)
-    output: tuple val(sample), val(group), path("${sample}_kraken_annotated.tsv")
+    input:  val(meta)
+    output: tuple val(meta), path("${meta.id}_kraken_annotated.tsv")
     script:
     """
     python3 ${projectDir}/bin/annotate_kraken_lineage.py \
-        --input       ${params.kraken_dir}/${sample}_2MM_CLEAN_noMAGs_kraken_output_005_.txt \
-        --output      ${sample}_kraken_annotated.tsv \
+        --input       ${params.kraken_dir}/${meta.id}_2MM_CLEAN_noMAGs_kraken_output_005_.txt \
+        --output      ${meta.id}_kraken_annotated.tsv \
     """
 }
 
 process FILTER_KRAKEN {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'low'
     publishDir "${params.outdir}/kraken_filtered", mode: 'copy'
     input:
-    tuple val(sample), val(group), path(annotated_tsv)
+    tuple val(meta), path(annotated_tsv)
     output:
-    tuple val(sample), val(group),
-          path("${sample}_kraken_invertebrates_filtered.tsv"),
-          path("${sample}_kraken_filter_stats.tsv")             // ← new
+    tuple val(meta),
+          path("${meta.id}_kraken_invertebrates_filtered.tsv"),
+          path("${meta.id}_kraken_filter_stats.tsv")             // ← new
     script:
     """
     python3 ${projectDir}/bin/filter_kraken_invertebrates.py \
         --min-len   ${params.min_len} \
-        --stats-out ${sample}_kraken_filter_stats.tsv \
+        --stats-out ${meta.id}_kraken_filter_stats.tsv \
         ${params.invertebrate_phyla} \
         ${annotated_tsv} \
-        ${sample}_kraken_invertebrates_filtered.tsv
+        ${meta.id}_kraken_invertebrates_filtered.tsv
     """
 }
 
@@ -289,38 +297,38 @@ process FILTER_KRAKEN {
 // ============================================================================
 
 process ANNOTATE_BLAST {
-    tag "${sample}_${mate}"
+    tag "${meta.id}_${mate}"
     label 'med'
     //publishDir "${params.outdir}/blast_annotated", mode: 'copy'
-    input:  tuple val(sample), val(group), val(mate)
-    output: tuple val(sample), val(group), val(mate), path("${sample}_${mate}_blast_annotated.tsv")
+    input:  tuple val(meta), val(mate)
+    output: tuple val(meta), val(mate), path("${meta.id}_${mate}_blast_annotated.tsv")
     script:
     """
     python3 ${projectDir}/bin/annotate_blast_lineage.py \
-        --input       ${params.blast_dir}/${sample}_${mate}.tsv \
-        --output      ${sample}_${mate}_blast_annotated.tsv \
+        --input       ${params.blast_dir}/${meta.id}_${mate}.tsv \
+        --output      ${meta.id}_${mate}_blast_annotated.tsv \
         --taxid-col   13
     """
 }
 
 process FILTER_BLAST {
-    tag "${sample}_${mate}"
+    tag "${meta.id}_${mate}"
     label 'low'
     publishDir "${params.outdir}/blast_filtered", mode: 'copy'
     input:
-    tuple val(sample), val(group), val(mate), path(annotated_tsv)
+    tuple val(meta), val(mate), path(annotated_tsv)
     output:
-    tuple val(sample), val(group), val(mate),
-          path("${sample}_${mate}_blast_all_lengths_filtered.tsv"),
-          path("${sample}_${mate}_blast_filter_stats.tsv")      // ← new
+    tuple val(meta), val(mate),
+          path("${meta.id}_${mate}_blast_all_lengths_filtered.tsv"),
+          path("${meta.id}_${mate}_blast_filter_stats.tsv")      // ← new
     script:
     """
     python3 ${projectDir}/bin/filter_blast_all_conditions.py \
         --min-len   ${params.min_len} \
-        --stats-out ${sample}_${mate}_blast_filter_stats.tsv \
+        --stats-out ${meta.id}_${mate}_blast_filter_stats.tsv \
         ${params.invertebrate_phyla} \
         ${annotated_tsv} \
-        ${sample}_${mate}_blast_all_lengths_filtered.tsv
+        ${meta.id}_${mate}_blast_all_lengths_filtered.tsv
     """
 }
 
@@ -333,26 +341,26 @@ process FILTER_BLAST {
 // ============================================================================
 
 process SELECT_CANDIDATES {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'low'
     publishDir "${params.outdir}/candidates", mode: 'copy'
     input:
-    tuple val(sample), val(group),
+    tuple val(meta),
           path(dup_detail),
           path(collapsed_clean_fq),
           path(collapse_stats)
     output:
-    tuple val(sample), val(group),
-          path("${sample}_ge5_detected_ids.txt"),
-          path("${sample}_ge5_detected.hist"),
-          path("${sample}_ge5_detected_weighted_ids.tsv")
+    tuple val(meta),
+          path("${meta.id}_ge5_detected_ids.txt"),
+          path("${meta.id}_ge5_detected.hist"),
+          path("${meta.id}_ge5_detected_weighted_ids.tsv")
     script:
     """
     python3 ${projectDir}/bin/ge5_18nt_filtering_pipeline_for_both_mates.py \
         --mode       filtered \
         --dup-file   ${dup_detail} \
         --fq-file    ${collapsed_clean_fq} \
-        --sample     ${sample} \
+        --sample     ${meta.id} \
         --output-dir . \
         --min-occ    ${params.min_occ} \
         --min-len    ${params.min_len}
@@ -367,19 +375,19 @@ process SELECT_CANDIDATES {
 // ============================================================================
 
 process EXTRACT_FASTA {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'low'
     publishDir "${params.outdir}/final_transRNAs_fasta_collapsed", mode: 'copy'
     input:
-    tuple val(sample), val(group),
+    tuple val(meta),
           path(ids),
           path(hist),
           path(wids),
           path(merged_fq)
     output:
-    tuple val(sample), val(group),
-          path("${sample}_final_transRNAs.fasta"),
-          path("${sample}_fasta_fetch_report.txt")
+    tuple val(meta),
+          path("${meta.id}_final_transRNAs.fasta"),
+          path("${meta.id}_fasta_fetch_report.txt")
     script:
     """
     EXPECTED=\$(wc -l < ${ids})
@@ -391,20 +399,20 @@ process EXTRACT_FASTA {
         -j ${task.cpus} \
         ${merged_fq} \
         | seqkit fq2fa \
-        > ${sample}_final_transRNAs.fasta
+        > ${meta.id}_final_transRNAs.fasta
 
-    FETCHED=\$(grep -c '^>' ${sample}_final_transRNAs.fasta || echo 0)
+    FETCHED=\$(grep -c '^>' ${meta.id}_final_transRNAs.fasta || echo 0)
 
-    echo "Sample: ${sample}"                           > ${sample}_fasta_fetch_report.txt
-    echo "Expected IDs: \${EXPECTED}"                >> ${sample}_fasta_fetch_report.txt
-    echo "Sequences fetched: \${FETCHED}"            >> ${sample}_fasta_fetch_report.txt
+    echo "Sample: ${meta.id}"                           > ${meta.id}_fasta_fetch_report.txt
+    echo "Expected IDs: \${EXPECTED}"                >> ${meta.id}_fasta_fetch_report.txt
+    echo "Sequences fetched: \${FETCHED}"            >> ${meta.id}_fasta_fetch_report.txt
     if [ "\${FETCHED}" -eq "\${EXPECTED}" ]; then
-        echo "Status: OK - all sequences fetched"     >> ${sample}_fasta_fetch_report.txt
+        echo "Status: OK - all sequences fetched"     >> ${meta.id}_fasta_fetch_report.txt
     else
         MISSING=\$(( EXPECTED - FETCHED ))
-        echo "Status: WARNING - \${MISSING} IDs not found in merged fq" >> ${sample}_fasta_fetch_report.txt
+        echo "Status: WARNING - \${MISSING} IDs not found in merged fq" >> ${meta.id}_fasta_fetch_report.txt
     fi
-    cat ${sample}_fasta_fetch_report.txt
+    cat ${meta.id}_fasta_fetch_report.txt
     """
 }
 
@@ -413,14 +421,14 @@ process EXTRACT_FASTA {
 // ============================================================================
 
 process PUBLISH_HISTS {
-    tag "${sample}"
+    tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/final_transRNAs_length_hists", mode: 'copy'
     input:
-    tuple val(sample), val(group),
+    tuple val(meta),
           path(ids), path(hist), path(wids)
     output:
-    tuple val(group), path("${sample}_ge5_detected.hist")
+    path("${meta.id}_ge5_detected.hist")
     script:
     """
     ls ${hist}
@@ -431,10 +439,11 @@ process PLOT_LENGTH_DIST {
     label 'count_only'
     publishDir "${params.outdir}/plots", mode: 'copy'
     input:  path(hist_files)
+            path(sample_sheet)
     output: path("*.png")          // ← collect all PNGs (both plots)
     script:
     """
-    python3 ${projectDir}/bin/plot_lengths.py .
+    python3 ${projectDir}/bin/plot_lengths.py . --samplesheet ${sample_sheet}
     """
 }
 
@@ -447,11 +456,14 @@ process PLOT_LENGTH_DIST {
 //    --kraken-dir : folder with all *_kraken_invertebrates_filtered.tsv files
 //    --dup-dir    : folder with all no_MAGs_*_duplicated.detail.txt files
 //    --reads-table: reads_posttrim_tab.tsv (fresh from this run)
+//    --samplesheet: resolved (post-group-default) sample,group table
 //
 //  Outputs per sample:  {sample}_{blast,kraken,combined}_{Rank}_summary.tsv
 //                       {sample}_{blast,kraken,combined}_{Rank}_top10.tsv
-//  Outputs per group:   {RJ,ST}_{blast,kraken,combined}_{Rank}_summary.tsv
-//                       {RJ,ST}_{blast,kraken,combined}_{Rank}_top10.tsv
+//  Outputs per group:   {group}_{blast,kraken,combined}_{Rank}_summary.tsv
+//                       {group}_{blast,kraken,combined}_{Rank}_top10.tsv
+//                       (skipped for a group with only one sample — its
+//                       per-sample output already covers it; see script)
 //  Report:              fetch_reinflate_report.tsv
 // ============================================================================
 
@@ -469,6 +481,8 @@ process TAXONOMY_PARSER {
     path(dup_files)
     // reads table produced by MAKE_READS_POSTTRIM_TAB
     path(reads_table)
+    // resolved sample sheet, so the parser can look up each sample's group
+    path(sample_sheet)
     output:
     path("*_top10.tsv"),           emit: top10_tsvs
     path("*_summary.tsv"),         emit: summary_tsvs
@@ -483,19 +497,21 @@ process TAXONOMY_PARSER {
         --kraken-dir  . \
         --dup-dir     . \
         --reads-table ${reads_table} \
+        --samplesheet ${sample_sheet} \
         --outdir      . \
         --priority    ${params.priority}
     """
 }
 
 // ============================================================================
-//  TAXONOMY PLOT — top10 TSVs → multi-panel broken-axis plot (RJ vs ST)
+//  TAXONOMY PLOT — top10 TSVs → multi-panel broken-axis plot (one column per group)
 // ============================================================================
 
 process PLOT_TAXONOMY {
     label 'count_only'
     publishDir "${params.outdir}/plots", mode: 'copy'
     input:  path(top10_tsvs)
+            path(sample_sheet)
     output: path("*.png")
     script:
     """
@@ -504,7 +520,8 @@ process PLOT_TAXONOMY {
         --outdir    . \
         --threshold ${params.tax_plot_threshold} \
         --max-normals ${params.tax_plot_max_normals} \
-        --xbreak    ${params.tax_plot_xbreak}
+        --xbreak    ${params.tax_plot_xbreak} \
+        --samplesheet ${sample_sheet}
     """
 }
 
@@ -526,6 +543,7 @@ process AGGREGATE_REPORT {
     path(collapse_stats)
     path(all_filter_stats_ch)   // filter stats: contains classified counts pre-filter
     path(wids_files)             // weighted_ids: for Total transRNAs after all filters
+    path(sample_sheet)
     output:
     path("pipeline_read_counts_report.tsv")
     path("pipeline_read_counts_report.html")
@@ -536,11 +554,13 @@ process AGGREGATE_REPORT {
     python3 ${projectDir}/bin/aggregate_report.py \
         --output          pipeline_read_counts_report.tsv \
         --summary-output  dataset_summary_report.tsv \
-        --virus-output    virus_exclusion_report.tsv
+        --virus-output    virus_exclusion_report.tsv \
+        --samplesheet     ${sample_sheet}
 
     python3 ${projectDir}/bin/report_to_html.py \
         pipeline_read_counts_report.tsv \
-        pipeline_read_counts_report.html
+        pipeline_read_counts_report.html \
+        ${sample_sheet}
     """
 }
 
@@ -550,14 +570,38 @@ process AGGREGATE_REPORT {
 
 workflow {
 
-    samples_ch = sampleChannel()
+    // ── Read + validate the sample sheet (nf-schema) ──────────────────────────
+    // Each row becomes (meta, fastq_1, fastq_2), where meta is a Map built from
+    // the schema's "meta"-tagged fields (currently: id, group). group is
+    // optional in the schema; resolveGroup() fills in a sample's own ID when
+    // it's missing, so every sample always belongs to *some* group without any
+    // downstream process needing to special-case "no group".
+    ch_samplesheet = Channel.fromList(
+            samplesheetToList(params.sample_sheet, "${projectDir}/assets/schema_input.json")
+        )
+        .map { meta, fastq_1, fastq_2 ->
+            meta.group = resolveGroup(meta)
+            tuple(meta, fastq_1, fastq_2)
+        }
+
+    samples_full_ch = ch_samplesheet                                    // (meta, fastq_1, fastq_2)
+    samples_ch      = samples_full_ch.map { meta, fq1, fq2 -> meta }    // meta only
+
+    // Resolved (post-default) sample,group table, handed to the Python
+    // aggregation scripts in place of the raw sample sheet: group defaulting
+    // (blank -> own sample ID) happens above, in Nextflow, not in the CSV
+    // file itself, so the scripts need this resolved view, not the raw file.
+    resolved_samplesheet_ch = Channel.value("sample,group")
+        .concat(samples_ch.map { meta -> "${meta.id},${meta.group}" })
+        .collectFile(name: "resolved_samplesheet.csv", newLine: true)
+        .first()
 
     // ── Read count reports at every pre-computed step ─────────────────────────
     // Skippable via params.skip_count_reports.
     // When skipped, AGGREGATE_REPORT is also disabled (no stats to aggregate).
     // If taxonomy is still needed, reads_posttrim_tab.tsv is loaded from disk.
     if (!params.skip_count_reports) {
-        raw_ch     = COUNT_RAW(samples_ch)
+        raw_ch     = COUNT_RAW(samples_full_ch)
         trimmed_ch = COUNT_TRIMMED(samples_ch)
         star_ch    = COUNT_STAR_UNMAPPED(samples_ch)
         host_ch    = COUNT_BBSPLIT_HOST(samples_ch)
@@ -565,7 +609,7 @@ workflow {
         nomags_ch  = COUNT_BBSPLIT_MAGS(samples_ch)
 
         reads_table_ch = MAKE_READS_POSTTRIM_TAB(
-            trimmed_ch.map { it[2] }.collect()
+            trimmed_ch.map { it[1] }.collect()
         )
     } else if (!params.skip_taxonomy) {
         // Load the pre-existing reads_posttrim_tab.tsv for the taxonomy parser
@@ -578,26 +622,26 @@ workflow {
     // ── Kraken annotation + filtering ─────────────────────────────────────────
     kraken_ann_ch          = ANNOTATE_KRAKEN(samples_ch)
     kraken_filtered_raw_ch = FILTER_KRAKEN(kraken_ann_ch)
-    kraken_filtered_ch     = kraken_filtered_raw_ch.map { sample, group, tsv, stats -> tuple(sample, group, tsv) }
-    // raw shape: (sample, group, filtered_tsv, filter_stats)
-    // downstream shape: (sample, group, filtered_tsv)
+    kraken_filtered_ch     = kraken_filtered_raw_ch.map { meta, tsv, stats -> tuple(meta, tsv) }
+    // raw shape: (meta, filtered_tsv, filter_stats)
+    // downstream shape: (meta, filtered_tsv)
 
     // ── BLAST annotation + filtering (mate 1 and 2 in parallel) ──────────────
-    blast_mates_ch = samples_ch.flatMap { sample, group ->
-        [ tuple(sample, group, "1"), tuple(sample, group, "2") ]
+    blast_mates_ch = samples_ch.flatMap { meta ->
+        [ tuple(meta, "1"), tuple(meta, "2") ]
     }
     blast_ann_ch      = ANNOTATE_BLAST(blast_mates_ch)
     blast_filtered_ch = FILTER_BLAST(blast_ann_ch)
 
-    blast1_ch = blast_filtered_ch.filter { it[2] == "1" }
-                    .map { sample, group, mate, tsv, stats -> tuple(sample, group, tsv) }
-    blast2_ch = blast_filtered_ch.filter { it[2] == "2" }
-                    .map { sample, group, mate, tsv, stats -> tuple(sample, group, tsv) }
+    blast1_ch = blast_filtered_ch.filter { it[1] == "1" }
+                    .map { meta, mate, tsv, stats -> tuple(meta, tsv) }
+    blast2_ch = blast_filtered_ch.filter { it[1] == "2" }
+                    .map { meta, mate, tsv, stats -> tuple(meta, tsv) }
 
     // Also collect all filter stats for AGGREGATE_REPORT (virus report).
     all_filter_stats_ch = kraken_filtered_raw_ch
-        .map { sample, group, tsv, stats -> stats }
-        .mix(blast_filtered_ch.map { sample, group, mate, tsv, stats -> stats })
+        .map { meta, tsv, stats -> stats }
+        .mix(blast_filtered_ch.map { meta, mate, tsv, stats -> stats })
         .collect()
 
     // ── Collapse (fetch from trimmed reads, cat, seqkit rmdup) ────────────────
@@ -607,37 +651,37 @@ workflow {
     // those outputs are needed by the taxonomy parser and aggregate report.
     if (!params.skip_collapse) {
         collapse_input_ch = blast1_ch
-            .join(blast2_ch,          by: [0, 1])
-            .join(kraken_filtered_ch, by: [0, 1])
+            .join(blast2_ch,          by: 0)
+            .join(kraken_filtered_ch, by: 0)
         collapse_ch = COLLAPSE_READS(collapse_input_ch)
     } else {
-        collapse_ch = samples_ch.map { sample, group ->
+        collapse_ch = samples_ch.map { meta ->
             tuple(
-                sample, group,
-                file("${params.outdir}/collapsed/${sample}_merged_duplicated.detail.txt",       checkIfExists: true),
-                file("${params.outdir}/collapsed/${sample}_merged_collapsed_clean.fq",           checkIfExists: true),
-                file("${params.outdir}/collapsed/${sample}_merged.fq",                           checkIfExists: true),
-                file("${params.outdir}/collapsed/${sample}_collapse_stats.tsv",                  checkIfExists: true)
+                meta,
+                file("${params.outdir}/collapsed/${meta.id}_merged_duplicated.detail.txt",       checkIfExists: true),
+                file("${params.outdir}/collapsed/${meta.id}_merged_collapsed_clean.fq",           checkIfExists: true),
+                file("${params.outdir}/collapsed/${meta.id}_merged.fq",                           checkIfExists: true),
+                file("${params.outdir}/collapsed/${meta.id}_collapse_stats.tsv",                  checkIfExists: true)
             )
         }
     }
-    // shape: (sample, group, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats)
+    // shape: (meta, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats)
 
     // ── Candidate selection ───────────────────────────────────────────────────
     // No longer needs BLAST/Kraken dirs — pool is already filtered.
     candidates_input_ch = collapse_ch
-        .map { sample, group, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats ->
-               tuple(sample, group, dup_detail, collapsed_clean_fq, collapse_stats) }
+        .map { meta, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats ->
+               tuple(meta, dup_detail, collapsed_clean_fq, collapse_stats) }
 
     candidates_ch = SELECT_CANDIDATES(candidates_input_ch)
-    // shape: (sample, group, ids, hist, wids)
+    // shape: (meta, ids, hist, wids)
 
     // ── Extract FASTA ─────────────────────────────────────────────────────────
     extract_input_ch = candidates_ch
-        .join(collapse_ch.map { sample, group, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats ->
-            tuple(sample, group, collapsed_clean_fq) }, by: [0, 1])
-        .map { sample, group, ids, hist, wids, collapsed_clean_fq ->
-            tuple(sample, group, ids, hist, wids, collapsed_clean_fq) }
+        .join(collapse_ch.map { meta, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats ->
+            tuple(meta, collapsed_clean_fq) }, by: 0)
+        .map { meta, ids, hist, wids, collapsed_clean_fq ->
+            tuple(meta, ids, hist, wids, collapsed_clean_fq) }
 
     if (!params.skip_extract_fasta) {
         EXTRACT_FASTA(extract_input_ch)
@@ -647,30 +691,28 @@ workflow {
     PUBLISH_HISTS(candidates_ch)
 
     if (!params.skip_length_plot) {
-        all_hists_ch = PUBLISH_HISTS.out
-            .map    { group, h -> h }
-            .collect()
-        PLOT_LENGTH_DIST(all_hists_ch)
+        all_hists_ch = PUBLISH_HISTS.out.collect()
+        PLOT_LENGTH_DIST(all_hists_ch, resolved_samplesheet_ch)
     }
 
     // ── Taxonomy parser (once globally) ──────────────────────────────────────
     all_ids_ch = candidates_ch
-        .map    { sample, group, ids, hist, wids -> ids }
+        .map    { meta, ids, hist, wids -> ids }
         .collect()
 
     // Collect all kraken filtered files
     all_kraken_ch = kraken_filtered_ch
-        .map    { sample, group, tsv -> tsv }
+        .map    { meta, tsv -> tsv }
         .collect()
 
     // Collect all blast filtered files (both mates)
     all_blast_ch = blast_filtered_ch
-        .map    { sample, group, mate, tsv, stats -> tsv }
+        .map    { meta, mate, tsv, stats -> tsv }
         .collect()
 
     // Collect all dup detail files (one per sample in new flow)
     all_dups_ch = collapse_ch
-        .map    { sample, group, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats -> dup_detail }
+        .map    { meta, dup_detail, collapsed_clean_fq, merged_fq, collapse_stats -> dup_detail }
         .collect()
 
     if (!params.skip_taxonomy) {
@@ -679,15 +721,40 @@ workflow {
             all_kraken_ch,
             all_blast_ch,
             all_dups_ch,
-            reads_table_ch
+            reads_table_ch,
+            resolved_samplesheet_ch
         )
+
+        // Pick out per-group combined top10 files (e.g. "RJ_blast_Domain_top10.tsv")
+        // from per-sample ones (e.g. "RJ1_blast_Domain_top10.tsv"), for any
+        // number/labels of groups. Filenames always end in a fixed
+        // "_{tool}_{rank}_top10.tsv" suffix from a known small vocabulary, so
+        // the label is extracted exactly (not by prefix) and checked against
+        // the resolved group set — this also correctly excludes a sample
+        // whose own ID happens to start with a real group's name followed by
+        // "_" (e.g. sample "RJ_1" in group "RJ"), which a prefix check would
+        // wrongly sweep in as if it were RJ's group-level file.
+        // (A group with only one sample has no combined file at all — the
+        // taxonomy parser skips it since the per-sample file already covers
+        // it; see 04_05_2026_transRNA_taxonomy_parser.py.)
+        group_labels_ch = samples_ch
+            .map    { meta -> meta.group.toString() }
+            .unique()
+            .collect()
+
+        top10_label_re = ~/^(.+)_(blast|kraken|combined)_(Domain|Kingdom|Order|Species)_top10\.tsv$/
 
         top10_for_plot_ch = taxonomy_ch.top10_tsvs
             .flatten()
-            .filter  { it.name =~ /^(RJ|ST)_.*_top10\.tsv$/ }
+            .combine(group_labels_ch)
+            .filter  { f, groups ->
+                def m = f.name =~ top10_label_re
+                m.matches() && groups.contains(m.group(1))
+            }
+            .map     { f, groups -> f }
             .collect()
 
-        PLOT_TAXONOMY(top10_for_plot_ch)
+        PLOT_TAXONOMY(top10_for_plot_ch, resolved_samplesheet_ch)
     }
 
     // ── Aggregate read count report ───────────────────────────────────────────
@@ -695,20 +762,21 @@ workflow {
     // Can also be skipped independently via skip_report.
     if (!params.skip_report && !params.skip_count_reports) {
         all_wids_ch = candidates_ch
-            .map { sample, group, ids, hist, wids -> wids }
+            .map { meta, ids, hist, wids -> wids }
             .collect()
 
         AGGREGATE_REPORT(
-            raw_ch    .map { it[2] }.collect(),
-            trimmed_ch.map { it[2] }.collect(),
+            raw_ch    .map { it[1] }.collect(),
+            trimmed_ch.map { it[1] }.collect(),
+            star_ch   .map { it[1] }.collect(),
             star_ch   .map { it[2] }.collect(),
-            star_ch   .map { it[3] }.collect(),
-            host_ch   .map { it[2] }.collect(),
-            virus_ch  .map { it[2] }.collect(),
-            nomags_ch .map { it[2] }.collect(),
-            collapse_ch.map { it[5] }.collect(),
+            host_ch   .map { it[1] }.collect(),
+            virus_ch  .map { it[1] }.collect(),
+            nomags_ch .map { it[1] }.collect(),
+            collapse_ch.map { it[4] }.collect(),
             all_filter_stats_ch,
-            all_wids_ch
+            all_wids_ch,
+            resolved_samplesheet_ch
         )
     }
 }

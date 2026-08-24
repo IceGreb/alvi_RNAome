@@ -1,0 +1,40 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/IceGreb/honeybee-alvi-RNAome/main/workflow/transRNA_pipeline/assets/schema_input.json",
+    "title": "transRNA pipeline - params.sample_sheet schema",
+    "description": "Schema for the sample sheet provided via params.sample_sheet",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "sample": {
+                "type": "string",
+                "pattern": "^\\S+$",
+                "meta": ["id"],
+                "errorMessage": "Sample must be a string with no spaces"
+            },
+            "group": {
+                "type": ["string", "integer"],
+                "pattern": "^\\S+$",
+                "meta": ["group"],
+                "errorMessage": "Group must be a string or integer with no spaces. Optional: if omitted, the sample is treated as its own group."
+            },
+            "fastq_1": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "pattern": "^\\S+\\.f(ast)?q\\.gz$",
+                "errorMessage": "fastq_1 must be an existing .fastq.gz/.fq.gz file path with no spaces"
+            },
+            "fastq_2": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "pattern": "^\\S+\\.f(ast)?q\\.gz$",
+                "errorMessage": "fastq_2 must be an existing .fastq.gz/.fq.gz file path with no spaces"
+            }
+        },
+        "required": ["sample", "fastq_1", "fastq_2"]
+    },
+    "uniqueEntries": ["sample"]
+}

@@ -21,10 +21,9 @@ invertebrate_phyla: "<path/to/invertebrate_phyla.txt>"
 taxonkit_db: "<path/to/.taxonkit>"
 
 # ── Input data directories ────────────────────────────────────────────────────
-# RJ raw reads:      {raw_dir_rj}/{sample}/{sample}_1.fq.gz
-raw_dir_rj:       "<path/to/Royal_jelly/raw_reads>"
-# ST raw reads:      {raw_dir_st}/{sample}/{sample}_1.fq.gz
-raw_dir_st:       "<path/to/Systemic_larval_tissue/raw_reads>"
+# Raw reads are no longer set here — each sample's fastq_1/fastq_2 paths are
+# read directly from the sample sheet (see samples.csv). Any number of groups
+# with any labels are supported.
 
 # Trimmed:           {trimmed_dir}/{sample}_1_trimmed.fq.gz
 trimmed_dir:      "<path/to/trimmed_reads>"

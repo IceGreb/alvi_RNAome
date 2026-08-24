@@ -23,23 +23,46 @@ PROJECT="<your-slurm-project>"
 
 ## Samples
 
-| Sample | Group | Sample | Group |
-|--------|-------|--------|-------|
-| RJ1    | RJ    | T1GMN  | ST    |
-| RJ2    | RJ    | T4GMN  | ST    |
-| RJ3    | RJ    | TA1    | ST    |
-|        |       | TB1    | ST    |
-|        |       | TC1    | ST    |
-|        |       | TD1    | ST    |
+Samples, groups, and raw read paths are all defined in `samples.csv`
+(nf-core-style sample sheet). Any number of groups, with any labels, is supported,
+and `group` is optional.
 
-Edit `samples.csv` to add or remove samples.
+```csv
+sample,group,fastq_1,fastq_2
+RJ1,RJ,/path/to/raw_reads/RJ1_1.fq.gz,/path/to/raw_reads/RJ1_2.fq.gz
+RJ2,RJ,/path/to/raw_reads/RJ2_1.fq.gz,/path/to/raw_reads/RJ2_2.fq.gz
+T1GMN,ST,/path/to/raw_reads/T1GMN_1.fq.gz,/path/to/raw_reads/T1GMN_2.fq.gz
+Extra1,,/path/to/raw_reads/Extra1_1.fq.gz,/path/to/raw_reads/Extra1_2.fq.gz
+```
+
+The example above (RJ = Royal Jelly, ST = Systemic larval tissue) reflects
+the dataset used in the accompanying manuscript, but the pipeline itself
+makes no assumption about group names or count. Edit `samples.csv` to
+add, remove, or relabel samples/groups for a different dataset. Leaving
+`group` blank (like `Extra1` above) is fine — a sample with no group is
+treated as its own, single-sample group in every per-group summary/plot.
+
+The sample sheet is parsed and validated against `assets/schema_input.json`
+via the [nf-schema](https://nextflow-io.github.io/nf-schema/) plugin — the
+same mechanism current nf-core pipelines (e.g. nf-core/mag) use for their
+`--input` sample sheet. It checks required columns, that `fastq_1`/`fastq_2`
+point to existing `.fastq.gz`/`.fq.gz` files, and that sample IDs are
+unique, and fails fast with a clear error if not. Each sample's resolved
+`id`/`group` then travels through the whole pipeline as a small Groovy map
+(`meta`) attached to every channel item, rather than as separate
+positional fields — again the same pattern nf-core pipelines use.
+
+Every other pre-computed input (trimmed reads, STAR unmapped reads, BBsplit
+outputs, Kraken2 output, BLAST output) is still located via the directory
+params in `params.yml` plus a fixed per-sample filename convention — see
+the comments in `params.yml` for the exact expected filenames.
 
 ---
 
 ## Pipeline steps and outputs
 
 ```
-Step 1   Raw reads (fq.gz)
+Step 1   Raw reads (fq.gz, paths from samples.csv fastq_1/fastq_2)
            → reports/01_raw/{sample}_raw_stats.tsv
 
 Step 2   Trimmed reads (TrimGalore, pre-computed)
@@ -105,17 +128,20 @@ Step 12  TAXONOMY PARSER  (called ONCE GLOBALLY — all samples together)
              - Re-inflates using duplicate weights
              - RPM-normalises using reads_posttrim_tab.tsv
              - Priority: blast (configurable)
-             - Produces per-sample AND per-group (RJ/ST) tables
+             - Produces per-sample AND per-group tables (groups from samples.csv)
            → final_transRNAs_taxonomies/{sample}_{blast,kraken,combined}_{Rank}_summary.tsv
            → final_transRNAs_taxonomies/{sample}_{blast,kraken,combined}_{Rank}_top10.tsv
-           → final_transRNAs_taxonomies/{RJ,ST}_{blast,kraken,combined}_{Rank}_summary.tsv
-           → final_transRNAs_taxonomies/{RJ,ST}_{blast,kraken,combined}_{Rank}_top10.tsv
+           → final_transRNAs_taxonomies/{group}_{blast,kraken,combined}_{Rank}_summary.tsv
+           → final_transRNAs_taxonomies/{group}_{blast,kraken,combined}_{Rank}_top10.tsv
+             (skipped for a group with only one sample — its per-sample
+             output above already covers it; avoids the two colliding
+             since a solo group's label defaults to that sample's own ID)
            → final_transRNAs_taxonomies/fetch_reinflate_report.tsv
 
 Step 13  TAXONOMY PLOT (plot_top10_taxa_global_colors.py)
-           Reads RJ_*_top10.tsv and ST_*_top10.tsv files.
+           Reads each group's {group}_*_top10.tsv files.
            Multi-panel broken-axis horizontal bar plot; ranks: Domain/Kingdom/Order/Species
-           → plots/*.png  (RJ and ST side-by-side panels)
+           → plots/*.png  (one column per group)
 
 Step 14  AGGREGATE READ-COUNT REPORT
            → reports/pipeline_read_counts_report.tsv
@@ -198,3 +224,7 @@ nextflow/24.04.4
 - `process.cache = 'lenient'` prevents spurious cache misses from RDS NFS jitter
 - For very large BLAST TSVs, switch `ANNOTATE_BLAST` to `icelake-himem` in `cambridge.config`
 - Monitor jobs: `squeue -u <your_username>` and `tail -f logs/nextflow_*.log`
+- The pipeline declares the `nf-schema` plugin (`nextflow.config`), used to validate
+  `samples.csv`. Nextflow downloads it automatically the first time the pipeline runs,
+  so the login node needs outbound internet access on that first run; after that it's
+  cached locally (`~/.nextflow/plugins`) and no further downloads are needed.

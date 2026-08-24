@@ -3,11 +3,12 @@
 report_to_html.py
 Converts pipeline_read_counts_report.tsv to styled HTML.
 """
+import csv
 import sys
 import pandas as pd
 from pathlib import Path
 
-CSS = """
+BASE_CSS = """
 body{font-family:Arial,sans-serif;margin:24px;background:#f8f9fa;font-size:12px}
 h1{color:#2c3e50;font-size:18px}
 h2{color:#34495e;margin-top:20px;font-size:14px}
@@ -19,9 +20,27 @@ td{padding:4px 10px;border-bottom:1px solid #dde;text-align:right;white-space:no
 td:first-child{text-align:left;font-weight:bold}
 tr:nth-child(even){background:#ecf0f1}
 tr:hover{background:#d5dbdb}
-.rj{color:#0070b8}
-.st{color:#cc0000}
 """
+
+# Cycled through in order for however many groups are present.
+GROUP_COLOR_POOL = [
+    "#0070b8", "#cc0000", "#1a8a3d", "#7d3c98",
+    "#c9760d", "#0e8a8a", "#a83279", "#5d4037",
+]
+
+
+def load_samplesheet(path: Path) -> dict:
+    """Return {sample: group} from a sample,group,fastq_1,fastq_2 sample sheet."""
+    mapping = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            mapping[row["sample"].strip()] = row["group"].strip()
+    return mapping
+
+
+def group_css_class(group: str) -> str:
+    """A CSS-safe class name derived from an arbitrary group label."""
+    return "grp-" + "".join(c if c.isalnum() else "-" for c in group.lower())
 
 COL_ORDER = [
     "Sample",
@@ -48,24 +67,18 @@ def fmt(x):
     except Exception:
         return "" if (str(x) in ("nan","")) else str(x)
 
-def group_of(sample):
-    s = sample.upper()
-    if s.startswith("RJ"): return "RJ"
-    if s.startswith("T"):  return "ST"
-    return ""
-
-def make_table(df):
+def make_table(df, sample_to_group, group_css):
     present = [c for c in COL_ORDER if c in df.columns]
     th = "".join(f"<th>{c}</th>" for c in present)
     rows_html = []
     for _, row in df.iterrows():
         sample = str(row.get("Sample",""))
-        grp = group_of(sample)
-        cls = "rj" if grp=="RJ" else "st" if grp=="ST" else ""
+        grp = sample_to_group.get(sample)
+        cls = group_css.get(grp, "")
         cells = []
         for col in present:
             val = fmt(row.get(col,""))
-            td_cls = f' class="{cls}"' if col=="Sample" else ""
+            td_cls = f' class="{cls}"' if col=="Sample" and cls else ""
             cells.append(f"<td{td_cls}>{val}</td>")
         rows_html.append("<tr>" + "".join(cells) + "</tr>")
     return (
@@ -74,20 +87,33 @@ def make_table(df):
     )
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit(f"Usage: {sys.argv[0]} report.tsv report.html")
+    if len(sys.argv) != 4:
+        sys.exit(f"Usage: {sys.argv[0]} report.tsv report.html samplesheet.csv")
     df = pd.read_csv(sys.argv[1], sep="\t")
-    # sort RJ first, then ST
+    sample_to_group = load_samplesheet(sys.argv[3])
+    groups = sorted(set(sample_to_group.values()))
+    group_css = {g: group_css_class(g) for g in groups}
+
+    # Sort samples by the order their group first appears in the sample sheet,
+    # then by sample name within a group.
+    group_order = {g: i for i, g in enumerate(groups)}
     def sort_key(s):
-        s = str(s).upper()
-        return (0 if s.startswith("RJ") else 1, s)
+        grp = sample_to_group.get(str(s))
+        return (group_order.get(grp, len(groups)), str(s))
     df = df.iloc[df["Sample"].map(sort_key).argsort()]
 
-    table_html = make_table(df)
+    css_rules = "\n".join(
+        f".{cls}{{color:{GROUP_COLOR_POOL[i % len(GROUP_COLOR_POOL)]}}}"
+        for i, (g, cls) in enumerate(group_css.items())
+    )
+
+    table_html = make_table(df, sample_to_group, group_css)
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <title>transRNA Pipeline — Read Count Report</title>
-<style>{CSS}</style>
+<style>{BASE_CSS}
+{css_rules}
+</style>
 </head><body>
 <h1>transRNA Pipeline — Read Count Report</h1>
 <p class="note">

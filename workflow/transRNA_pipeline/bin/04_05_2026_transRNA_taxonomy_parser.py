@@ -121,16 +121,18 @@ def resolve_file(path: Path) -> Path | None:
     return None
 
 
-def sample_group(sample: str) -> str | None:
-    s = sample.upper()
+def load_samplesheet(path: Path) -> dict[str, str]:
+    """Return {sample: group} from a sample,group,fastq_1,fastq_2 sample sheet."""
+    import csv
+    mapping = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            mapping[row["sample"].strip()] = row["group"].strip()
+    return mapping
 
-    if s.startswith("RJ"):
-        return "RJ"
 
-    if s.startswith("T"):
-        return "ST"
-
-    return None
+def sample_group(sample: str, sample_to_group: dict[str, str]) -> str | None:
+    return sample_to_group.get(sample)
 
 
 def init_counts():
@@ -523,28 +525,30 @@ def main(args):
     if not samples:
         raise ValueError(f"No *_ge5_detected_ids.txt files found in {ids_dir}")
 
-    group_blast_counts = {
-        "RJ": init_counts(),
-        "ST": init_counts(),
-    }
+    sample_to_group = load_samplesheet(args.samplesheet)
+    groups = sorted(set(sample_to_group.values()))
 
-    group_kraken_counts = {
-        "RJ": init_counts(),
-        "ST": init_counts(),
-    }
+    # A group with only one sample can share its label with that sample
+    # (group defaults to the sample's own ID when unset) — its combined
+    # output would otherwise be written to the exact same path as the
+    # per-sample output, silently overwriting it. Count actual group
+    # membership among samples being processed so those can be skipped.
+    group_sizes = Counter(
+        sample_group(s, sample_to_group) for s in samples
+        if sample_group(s, sample_to_group) is not None
+    )
 
-    group_combined_counts = {
-        "RJ": init_counts(),
-        "ST": init_counts(),
-    }
+    group_blast_counts    = {g: init_counts() for g in groups}
+    group_kraken_counts   = {g: init_counts() for g in groups}
+    group_combined_counts = {g: init_counts() for g in groups}
 
     run_report_rows = []
 
     for sample in sorted(samples):
-        group = sample_group(sample)
+        group = sample_group(sample, sample_to_group)
 
         if group is None:
-            print(f"Skipping {sample}: sample does not belong to RJ or ST group")
+            print(f"Skipping {sample}: sample not found in {args.samplesheet}")
             continue
 
         print(f"\nProcessing sample: {sample} -> group {group}")
@@ -743,7 +747,7 @@ def main(args):
             save_summary(sample_combined_counts, outdir / f"{sample}_combined", total_reads=total_reads, already_rpm=False)
             make_top10(sample_combined_counts, outdir / f"{sample}_combined", total_reads=total_reads, already_rpm=False)
 
-        # ---------------- Add sample-normalised RPM to RJ/ST groups ----------------
+        # ---------------- Add sample-normalised RPM to its group ----------------
         sample_blast_rpm = rpm_normalise_counts(sample_blast_counts, total_reads)
         sample_kraken_rpm = rpm_normalise_counts(sample_kraken_counts, total_reads)
         sample_combined_rpm = rpm_normalise_counts(sample_combined_counts, total_reads)
@@ -774,8 +778,18 @@ def main(args):
             "unassigned_selected_ids": total_requested_unique - total_assigned_unique,
         })
 
-    # ---------------- RJ/ST combined outputs ----------------
-    for group in ["RJ", "ST"]:
+    # ---------------- Per-group combined outputs ----------------
+    for group in groups:
+        if group_sizes.get(group, 0) < 2:
+            # Solo group: its label may equal its one sample's ID (default
+            # group), which would make the combined-output path below
+            # collide with, and silently overwrite, that sample's own
+            # per-sample output. The per-sample output already covers this
+            # group fully, so skip writing a redundant/colliding one.
+            print(f"Skipping combined output for group '{group}': only one sample "
+                  f"in this group; its per-sample output already covers it")
+            continue
+
         if blast_dir:
             save_summary(group_blast_counts[group], outdir / f"{group}_blast", already_rpm=True)
             make_top10(group_blast_counts[group], outdir / f"{group}_blast", already_rpm=True)
@@ -801,7 +815,7 @@ if __name__ == "__main__":
         description=(
             "Fetch selected BLAST/Kraken taxonomy results from sample_1/2_ge5_detected_ids.txt, "
             "assign each read ID to only one tool, reinflate using clean1/clean2 duplicate detail files, "
-            "normalise by reads-per-million, and write per-sample plus RJ/ST combined summaries."
+            "normalise by reads-per-million, and write per-sample plus per-group combined summaries."
         )
     )
 
@@ -810,6 +824,7 @@ if __name__ == "__main__":
     parser.add_argument("--kraken-dir", required=False, help="Directory with corrected Kraken filtered TSV files")
     parser.add_argument("--dup-dir", required=True, help="Directory with no_MAGs_SAMPLE_2MM_clean1/clean2_duplicated.detail.txt files")
     parser.add_argument("--reads-table", required=True, help="reads_posttrim_tab.tsv with Sample and TotalReads columns")
+    parser.add_argument("--samplesheet", required=True, help="sample,group,fastq_1,fastq_2 sample sheet")
     parser.add_argument("--outdir", required=True, help="Output directory")
     parser.add_argument(
         "--priority",

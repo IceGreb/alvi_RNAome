@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import csv
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import glob
 import os
 import colorsys
+from datetime import date
 import matplotlib.ticker as mticker
 from matplotlib import gridspec
 
@@ -107,19 +109,34 @@ def read_top10_files(top10_dir):
         data[dataset][rank] = df
     return data
 
-def simplify_dataset_name(ds_name):
-    head = ds_name.split("_", 1)[0]
-    if head.upper().startswith("RJ"):
-        return "RJ"
-    if head.upper().startswith("ST"):
-        return "ST"
-    return head.upper()
+def load_samplesheet_groups(path):
+    """Return the distinct group labels from a sample,group,... sample sheet,
+    longest-first so prefix matching below is unambiguous."""
+    groups = set()
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            groups.add(row["group"].strip())
+    return sorted(groups, key=len, reverse=True)
 
-def merge_long_short(data):
+def simplify_dataset_name(ds_name, known_groups=None):
+    """Recover the group label a top10 filename's leading tokens belong to.
+
+    Filenames are "{group}_{tool}_{rank}_top10.tsv"; ds_name is everything
+    before "_{rank}". known_groups (from the sample sheet) lets this match
+    group labels that themselves contain underscores; without it, fall back
+    to the first underscore-delimited token.
+    """
+    if known_groups:
+        for g in known_groups:
+            if ds_name == g or ds_name.startswith(g + "_"):
+                return g
+    return ds_name.split("_", 1)[0]
+
+def merge_long_short(data, known_groups=None):
     merged = {}
     buckets = {}
     for ds_full, ranks_map in data.items():
-        ds_simple = simplify_dataset_name(ds_full)
+        ds_simple = simplify_dataset_name(ds_full, known_groups)
         for rank, df in ranks_map.items():
             if {"Taxonomy", "Count"} - set(df.columns):
                 continue
@@ -330,11 +347,13 @@ def plot_multi_panel(data, rank_palettes, datasets, ranks, outfile, x_break_poin
 
 # ------------------ Main ------------------
 
-def main(top10_dir, outdir, pct_threshold=0.1, max_normals=10, x_break_point=2.5):
+def main(top10_dir, outdir, pct_threshold=0.1, max_normals=10, x_break_point=2.5, samplesheet=None):
     os.makedirs(outdir, exist_ok=True)
 
+    known_groups = load_samplesheet_groups(samplesheet) if samplesheet else None
+
     data_raw = read_top10_files(top10_dir)
-    data_merged = merge_long_short(data_raw)
+    data_merged = merge_long_short(data_raw, known_groups)
 
     for ds in list(data_merged.keys()):
         for rank in list(data_merged[ds].keys()):
@@ -345,11 +364,10 @@ def main(top10_dir, outdir, pct_threshold=0.1, max_normals=10, x_break_point=2.5
 
     rank_palettes = build_rank_palettes(data_merged)
 
-    desired_datasets = [ds for ds in ["RJ", "ST"] if ds in data_merged]
-    if not desired_datasets:
-        desired_datasets = sorted(data_merged.keys())
+    desired_datasets = sorted(data_merged.keys())
 
-    outfile = os.path.join(outdir, "12_11_2025_ge5_RJ_ST_top10.png")
+    today = date.today().strftime("%d_%m_%Y")
+    outfile = os.path.join(outdir, f"{today}_ge5_taxonomy_top10.png")
     plot_multi_panel(data_merged, rank_palettes, desired_datasets, RANKS, outfile, x_break_point=x_break_point)
 
 if __name__ == "__main__":
@@ -364,5 +382,9 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0.1, help="Percentage threshold (default: 0.1)")
     parser.add_argument("--max-normals", type=int, default=10, help="Max normal taxa per panel (default: 10)")
     parser.add_argument("--xbreak", type=float, default=2.5, help="X-axis break point (default: 2.5)")
+    parser.add_argument("--samplesheet", required=False,
+                         help="sample,group,fastq_1,fastq_2 sample sheet; used to recover group "
+                              "labels from top10 filenames when a group name contains underscores")
     args = parser.parse_args()
-    main(args.top10_dir, args.outdir, pct_threshold=args.threshold, max_normals=args.max_normals, x_break_point=args.xbreak)
+    main(args.top10_dir, args.outdir, pct_threshold=args.threshold, max_normals=args.max_normals,
+         x_break_point=args.xbreak, samplesheet=args.samplesheet)

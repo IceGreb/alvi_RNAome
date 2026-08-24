@@ -48,12 +48,18 @@ DNA library.
 
 ### Samples
 
-Two sample groups were sequenced:
+Two sample groups were sequenced for this study:
 
 | Group | Description | Samples |
 |-------|-------------|---------|
 | **RJ** | Royal Jelly | RJ1, RJ2, RJ3 |
 | **ST** | Systemic larval tissue | T1GMN, T4GMN, TA1, TB1, TC1, TD1 |
+
+This reflects the dataset used in the manuscript, not a constraint of the
+pipeline: samples, groups, and raw read paths are all defined in
+`workflow/transRNA_pipeline/samples.csv`, and the pipeline supports any
+number of groups with any labels — see the pipeline README's *Samples*
+section for the sample sheet format.
 
 ## Code Overview
 
