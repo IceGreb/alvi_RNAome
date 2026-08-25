@@ -11,12 +11,7 @@ nextflow.enable.dsl = 2
   number of groups, with any labels, is supported. group is optional — a
   sample with no group is treated as its own group (see resolveGroup()).
 
-  Sample sheet parsing/validation uses the nf-schema plugin against
-  assets/schema_input.json, matching how current nf-core pipelines (e.g.
-  nf-core/mag) read their --input samplesheet. Every sample's resolved
-  metadata (id, group) travels through the pipeline as a Groovy Map
-  ("meta") attached to each channel item — e.g. tuple(meta, reads) — rather
-  than as separate positional (sample, group) tuple elements.
+  
 
   Key design notes:
     • Read counts reported at EVERY step (raw → trimmed → STAR → bbsplit ×3)
@@ -33,6 +28,7 @@ nextflow.enable.dsl = 2
 */
 
 include { samplesheetToList } from 'plugin/nf-schema'
+include { FASTQC            } from './modules/nf-core/fastqc/main.nf'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -55,13 +51,12 @@ process COUNT_RAW {
     tag "${meta.id}"
     label 'count_only'
     publishDir "${params.outdir}/reports/01_raw", mode: 'copy'
-    input:  tuple val(meta), path(fastq_1), path(fastq_2)
+    input:  tuple val(meta), path(reads)
     output: tuple val(meta), path("${meta.id}_raw_stats.tsv")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${fastq_1} \
-        ${fastq_2} \
+        ${reads} \
         > ${meta.id}_raw_stats.tsv
     """
 }
@@ -571,30 +566,28 @@ process AGGREGATE_REPORT {
 workflow {
 
     // ── Read + validate the sample sheet (nf-schema) ──────────────────────────
-    // Each row becomes (meta, fastq_1, fastq_2), where meta is a Map built from
-    // the schema's "meta"-tagged fields (currently: id, group). group is
-    // optional in the schema; resolveGroup() fills in a sample's own ID when
-    // it's missing, so every sample always belongs to *some* group without any
-    // downstream process needing to special-case "no group".
     ch_samplesheet = Channel.fromList(
             samplesheetToList(params.sample_sheet, "${projectDir}/assets/schema_input.json")
         )
         .map { meta, fastq_1, fastq_2 ->
             meta.group = resolveGroup(meta)
-            tuple(meta, fastq_1, fastq_2)
+            tuple(meta, [fastq_1, fastq_2])
         }
 
-    samples_full_ch = ch_samplesheet                                    // (meta, fastq_1, fastq_2)
-    samples_ch      = samples_full_ch.map { meta, fq1, fq2 -> meta }    // meta only
+    samples_full_ch = ch_samplesheet                                // (meta, [fastq_1, fastq_2])
+    samples_ch      = samples_full_ch.map { meta, reads -> meta }   // meta only
 
-    // Resolved (post-default) sample,group table, handed to the Python
-    // aggregation scripts in place of the raw sample sheet: group defaulting
-    // (blank -> own sample ID) happens above, in Nextflow, not in the CSV
-    // file itself, so the scripts need this resolved view, not the raw file.
-    resolved_samplesheet_ch = Channel.value("sample,group")
+        resolved_samplesheet_ch = Channel.value("sample,group")
         .concat(samples_ch.map { meta -> "${meta.id},${meta.group}" })
         .collectFile(name: "resolved_samplesheet.csv", newLine: true)
         .first()
+
+    // ── Raw-read QC (FastQC, vendored nf-core module) ─────────────────────────
+    // First thing done to the raw reads, before anything else. Independent
+    // of skip_count_reports: this is QC, not a read-count accounting step.
+    if (!params.skip_fastqc) {
+        FASTQC(samples_full_ch)
+    }
 
     // ── Read count reports at every pre-computed step ─────────────────────────
     // Skippable via params.skip_count_reports.

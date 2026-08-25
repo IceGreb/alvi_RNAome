@@ -73,19 +73,27 @@ section for the sample sheet format.
 
 ### transRNA pipeline
 
-* `workflow/transRNA_pipeline/main.nf` — Main Nextflow (DSL2) workflow. Orchestrates all 14
-  steps from read counting through taxonomy plotting and aggregate reporting. Processes all
-  samples in parallel across RJ and ST groups.
-* `workflow/transRNA_pipeline/nextflow.config` — Global Nextflow configuration: profiles,
-  process labels, work directory, cache mode (`lenient` for RDS NFS jitter), and pipeline
-  reports (HTML, timeline, DAG, trace).
+* `workflow/transRNA_pipeline/main.nf` — Main Nextflow (DSL2) workflow. Orchestrates raw-read
+  QC, read counting, filtering, taxonomy, and aggregate reporting. Sample/group metadata and
+  grouping come entirely from the sample sheet (see *Samples* above), not hard-coded.
+* `workflow/transRNA_pipeline/nextflow.config` — Global Nextflow configuration: plugins
+  (`nf-schema`), profiles, process labels, work directory, cache mode (`lenient` for RDS NFS
+  jitter), and pipeline reports (HTML, timeline, DAG, trace).
+* `workflow/transRNA_pipeline/modules.config` — Per-process configuration (publishDir,
+  options) for vendored nf-core modules — see `modules/` below.
 * `workflow/transRNA_pipeline/cambridge.config` — CSD3-specific SLURM executor settings,
-  partition and resource assignments per process label (`count_only`, `low`, `med`).
+  partition/resource assignments per process label (`count_only`/`low`/`med`/`high` for this
+  pipeline's own processes; `process_single`/`process_low`/`process_medium`/`process_high`
+  for vendored nf-core modules), and Singularity settings.
+* `workflow/transRNA_pipeline/modules/nf-core/` — Nf-core modules vendored unmodified from
+  [nf-core/modules](https://github.com/nf-core/modules) (currently: `fastqc`), so they stay
+  easy to re-sync from upstream. Module-specific options live in `modules.config`, not in
+  these files, to keep them pristine.
 * `workflow/transRNA_pipeline/params.yml` — All user-configurable parameters: input data paths,
   output directory, filtering thresholds (`min_occ`, `min_len`), taxonomy priority, plot
   parameters, and skip flags for modular reruns.
-* `workflow/transRNA_pipeline/samples.csv` — Sample sheet listing sample IDs and group
-  assignments (RJ/ST).
+* `workflow/transRNA_pipeline/samples.csv` — User-provided, gitignored sample sheet
+  (`sample,group,fastq_1,fastq_2`); see *Samples* above.
 * `workflow/transRNA_pipeline/run.sh` — Launch script for CSD3. Submits the Nextflow master
   job to SLURM; supports `--resume` for restarting after failure.
 

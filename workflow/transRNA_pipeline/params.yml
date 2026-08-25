@@ -82,9 +82,13 @@ tax_plot_xbreak:      2.5    # x-axis break point (%)
 #
 #   skip_report         skip AGGREGATE_REPORT only.
 #
+#   skip_fastqc         skip FASTQC (raw-read QC). Runs via Singularity
+#                       (cambridge.config), not the shared conda env.
+#
 skip_count_reports:  false
 skip_collapse:       false
 skip_extract_fasta:  false
 skip_taxonomy:       false
 skip_length_plot:    false
 skip_report:         false
+skip_fastqc:         false
