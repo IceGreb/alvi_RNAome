@@ -13,8 +13,11 @@ reads from Royal Jelly and systemic larval tissue samples and identify candidate
 RNA sequences. Part of the process was carried out using nf-core/rnaseq and nf-core/mag. The custom
 transRNA identification pipeline is implemented in Nextflow (DSL2) v1.2 and parallelized on
 the CSD3 icelake cluster at the University of Cambridge (kernel: Linux 4.18.0-553.125.1.el8_10.x86_64).
-Information about software versions and conda environments is found in the `config/` directory
-described in the _Config_ section below.
+The transRNA pipeline's own conda environment specs live in
+`workflow/transRNA_pipeline/config/envs/` (pipeline-scoped, alongside its
+`assets/`) — see that pipeline's README. The repo-root `config/` directory
+described in the _Config_ section below is reserved for anything shared
+across multiple workflows in this repo, not yet populated.
 
 ## Overview
 
@@ -80,8 +83,12 @@ section for the sample sheet format.
   (`nf-schema`), profiles, process labels, work directory, cache mode (`lenient` for RDS NFS
   jitter), and pipeline reports (HTML, timeline, DAG, trace).
 * `workflow/transRNA_pipeline/cambridge.config` — CSD3-specific SLURM executor settings,
-  partition/resource assignments per process label (`count_only`/`low`/`med`/`high`), and
-  Singularity settings (used by the self-authored `FASTQC` process — see below).
+  partition/resource assignments per process label (`count_only`/`low`/`med`/`high`), Singularity
+  settings (for `FASTQC`/`MULTIQC`), and conda settings (`conda.enabled`, cache dir — see below).
+* `workflow/transRNA_pipeline/config/envs/` — One small, version-pinned conda env per tool
+  cluster (e.g. `seqkit.yaml`, `trim_galore.yaml`), referenced by each process's own `conda "..."`
+  directive in `main.nf`. Nextflow builds/caches each one itself — no manual install, no shared
+  pre-built environment to configure by hand.
 * `workflow/transRNA_pipeline/params.yml` — All user-configurable parameters: input data paths,
   output directory, filtering thresholds (`min_occ`, `min_len`), taxonomy priority, plot
   parameters, and skip flags for modular reruns.
@@ -124,8 +131,9 @@ section for the sample sheet format.
 
 ### Config
 
-* `config/` — Configuration files and conda environment specifications for the workflows and
-  downstream analysis scripts.
+* `config/` — Reserved for configuration shared across multiple workflows in this repo; not
+  yet populated. Each individual workflow keeps its own config alongside itself instead — e.g.
+  the transRNA pipeline's conda env specs are in `workflow/transRNA_pipeline/config/envs/`.
 
 ## Some useful intermediate files
 

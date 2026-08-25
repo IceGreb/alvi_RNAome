@@ -1,0 +1,12 @@
+# Python scripts that need pandas/numpy/matplotlib/seaborn:
+# make_reads_posttrim_tab.py, 04_05_2026_transRNA_taxonomy_parser.py,
+# report_to_html.py, aggregate_report.py, plot_lengths.py,
+# plot_top10_taxa_global_colors.py.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pandas=2.2.3
+  - numpy=2.4.6
+  - matplotlib=3.9.1
+  - seaborn=0.13.2

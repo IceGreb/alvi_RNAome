@@ -1,0 +1,6 @@
+# Pure-stdlib Python scripts (no pandas/numpy/etc.): filter_kraken_invertebrates.py,
+# filter_blast_all_conditions.py, ge5_18nt_filtering_pipeline_for_both_mates.py.
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12

@@ -1,0 +1,8 @@
+# annotate_kraken_lineage.py / annotate_blast_lineage.py both shell out to
+# `taxonkit reformat2` internally, so python and taxonkit live together here.
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - taxonkit=0.20.0
+  - python=3.12

@@ -25,7 +25,9 @@ taxonkit_db: "<path/to/.taxonkit>"
 # read directly from the sample sheet (see samples.csv). Any number of groups
 # with any labels are supported.
 
-# Trimmed:           {trimmed_dir}/{sample}_1_trimmed.fq.gz
+# Trimmed reads are produced by TRIMGALORE by default — trimmed_dir is only
+# used when skip_trimming: true (see below), pointing at pre-trimmed reads
+# already matching {trimmed_dir}/{sample}_{1,2}_trimmed.fq.gz.
 trimmed_dir:      "<path/to/trimmed_reads>"
 
 # STAR unmapped:     {star_dir}/{sample}/{sample}_Unmapped.out.mate1
@@ -45,6 +47,19 @@ kraken_dir:       "<path/to/kraken/output>"
 
 # BLAST output:      {blast_dir}/{sample}_1.tsv  and  {sample}_2.tsv
 blast_dir:        "<path/to/blast/output>"
+
+# ── TrimGalore ────────────────────────────────────────────────────────────────
+# Values below are TrimGalore's own defaults, spelled out explicitly so
+# they're visible/adjustable here rather than hidden behind the tool.
+# Anything else (e.g. explicit adapters) goes in trim_extra_args.
+trim_quality:     20    # Phred quality cutoff
+trim_stringency:  1     # min adapter-overlap (bp) required to trim
+trim_length:      20    # discard reads shorter than this after trimming
+trim_cores:       4     # passed to `trim_galore --cores`; TrimGalore's own
+                        # docs call 4 the practical sweet spot — actual
+                        # thread usage runs well above this (see
+                        # cambridge.config's TRIMGALORE override)
+trim_extra_args:  ""    # e.g. "-a AGATCGGAAGAGC -a2 GATCGTCGGACT --trim-n"
 
 # ── Filtering thresholds ──────────────────────────────────────────────────────
 min_occ: 5      # minimum duplicate count for a read to be a candidate (≥5)
@@ -82,8 +97,11 @@ tax_plot_xbreak:      2.5    # x-axis break point (%)
 #
 #   skip_report         skip AGGREGATE_REPORT only.
 #
-#   skip_fastqc         skip FASTQC (raw-read QC). Runs via Singularity
-#                       (cambridge.config), not the shared conda env.
+#   skip_fastqc         skip FASTQC/MULTIQC (raw + trimmed-read QC). Runs via
+#                       Singularity (cambridge.config), not the shared conda env.
+#
+#   skip_trimming       skip TRIMGALORE and load pre-trimmed reads from
+#                       trimmed_dir instead (see above).
 #
 skip_count_reports:  false
 skip_collapse:       false
@@ -92,3 +110,4 @@ skip_taxonomy:       false
 skip_length_plot:    false
 skip_report:         false
 skip_fastqc:         false
+skip_trimming:       false

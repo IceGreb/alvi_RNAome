@@ -52,17 +52,18 @@ unique, and fails fast with a clear error if not. Each sample's resolved
 (`meta`) attached to every channel item, rather than as separate
 positional fields — again the same pattern nf-core pipelines use.
 
-Every other pre-computed input (trimmed reads, STAR unmapped reads, BBsplit
-outputs, Kraken2 output, BLAST output) is still located via the directory
-params in `params.yml` plus a fixed per-sample filename convention — see
-the comments in `params.yml` for the exact expected filenames.
+Trimming (TrimGalore) is run by the pipeline itself — see Step 2 below.
+Every other pre-computed input (STAR unmapped reads, BBsplit outputs,
+Kraken2 output, BLAST output) is still located via the directory params in
+`params.yml` plus a fixed per-sample filename convention — see the comments
+in `params.yml` for the exact expected filenames.
 
 ---
 
 ## Pipeline steps and outputs
 
 ```
-Step 0   RAW-READ QC (FastQC + MultiQC, self-authored, run via Singularity)
+Step 0   RAW-READ QC (FastQC + MultiQC, run via Singularity)
            Skippable via skip_fastqc. First thing done to the raw reads.
            → reports/00_fastqc_raw/{sample}_{1,2}_fastqc.{html,zip}
            → reports/00_fastqc_raw/multiqc_report.html
@@ -70,7 +71,17 @@ Step 0   RAW-READ QC (FastQC + MultiQC, self-authored, run via Singularity)
 Step 1   Raw reads (fq.gz, paths from samples.csv fastq_1/fastq_2)
            → reports/01_raw/{sample}_raw_stats.tsv
 
-Step 2   Trimmed reads (TrimGalore, pre-computed)
+Step 2   ADAPTER/QUALITY TRIMMING (TrimGalore, run by the pipeline)
+           Runs with TrimGalore's own defaults (quality 20, stringency 1,
+           length 20 — see params.yml to adjust, or trim_extra_args for
+           anything else, e.g. explicit adapters). Skippable via
+           skip_trimming (falls back to pre-trimmed reads in trimmed_dir).
+           Also runs TrimGalore's own --fastqc, aggregated by a second
+           MultiQC report (skippable via skip_fastqc, same as Step 0).
+           → trimmed/{sample}_{1,2}_trimmed.fq.gz
+           → reports/02_trimmed/{sample}_{1,2}.fq.gz_trimming_report.txt
+           → reports/02_trimmed/{sample}_{1,2}_val_{1,2}_fastqc.{html,zip}
+           → reports/02_trimmed/multiqc_report.html
            → reports/02_trimmed/{sample}_trimmed_stats.tsv
            → reports/reads_posttrim_tab.tsv            ← produced fresh here
 
@@ -215,17 +226,31 @@ echo "9606" | taxonkit lineage   # test: should print Homo sapiens lineage
 ## Software requirements
 
 ```
-python/3.11  (+ pip install pandas numpy matplotlib seaborn biopython)
-seqkit/2.8.0
-taxonkit/0.17.0
 nextflow/24.04.4
-singularity/apptainer  (only for the FASTQC process — see below)
+conda or mamba          (mamba strongly recommended — see below)
+singularity/apptainer   (only for the FASTQC/MULTIQC processes)
 ```
 
-The `FASTQC` process declares its own `container` and runs via Singularity, pulled
-automatically on first use — `fastqc` is *not* required in the shared conda env.
-Everything else in the pipeline still runs via the conda env activated in
-`cambridge.config`'s `beforeScript`, so the two execution styles coexist per-process.
+That's it — every actual bioinformatics tool (seqkit, taxonkit, trim-galore,
+cutadapt, pigz, pandas, numpy, matplotlib, seaborn...) is *not* a manual
+install. Each process declares its own conda env via a `conda "..."`
+directive pointing at a small, version-pinned file in `config/envs/`:
+
+| Env file | Used by | Contains |
+|---|---|---|
+| `trim_galore.yaml` | `TRIMGALORE` | trim-galore, cutadapt, pigz |
+| `seqkit.yaml` | `COUNT_*`, `EXTRACT_FASTA` | seqkit |
+| `collapse.yaml` | `COLLAPSE_READS` | seqkit, python (calls both) |
+| `taxonkit.yaml` | `ANNOTATE_KRAKEN`, `ANNOTATE_BLAST` | taxonkit, python (scripts shell out to taxonkit) |
+| `python_core.yaml` | `FILTER_KRAKEN`, `FILTER_BLAST`, `SELECT_CANDIDATES` | python only (pure-stdlib scripts) |
+| `python_analysis.yaml` | `MAKE_READS_POSTTRIM_TAB`, `TAXONOMY_PARSER`, `PLOT_LENGTH_DIST`, `PLOT_TAXONOMY`, `AGGREGATE_REPORT` | python, pandas, numpy, matplotlib, seaborn |
+
+Nextflow builds each env itself the first time it's needed (`conda.enabled`
+in `cambridge.config`/`nextflow.config`'s `local` profile) and caches it —
+no manual `conda install`, no shared pre-built env to hand-configure. Only
+`FASTQC`/`MULTIQC` are the exception: they run via their own Singularity
+container instead (declared directly on those two processes), so Singularity
+is needed too, but only for those.
 
 ---
 
@@ -239,8 +264,12 @@ Everything else in the pipeline still runs via the conda env activated in
   `samples.csv`. Nextflow downloads it automatically the first time the pipeline runs,
   so the login node needs outbound internet access on that first run; after that it's
   cached locally (`~/.nextflow/plugins`) and no further downloads are needed.
-- Similarly, `FASTQC`'s Singularity image is pulled on first use and cached under
+- Similarly, `FASTQC`/`MULTIQC`'s Singularity images are pulled on first use and cached under
   `NXF_SINGULARITY_CACHEDIR` (or `~/.singularity/cache` if that env var isn't set)
   — set `NXF_SINGULARITY_CACHEDIR` to somewhere outside your home quota
   (e.g. `export NXF_SINGULARITY_CACHEDIR=<path>/hpc-work/singularity_cache` in
   `~/.bashrc`) before the first run.
+- Same idea for the per-process conda envs (`config/envs/*.yaml`): set
+  `params.conda_cache_dir` in `params.yml` to a persistent path outside your
+  home quota before the first run — each env is built there once (a few
+  minutes total) and reused after that, on every subsequent run.

@@ -1,0 +1,9 @@
+# COLLAPSE_READS calls both seqkit and bin/collapse_stats.py (pure stdlib
+# Python — no pandas etc. needed) in the same process, so both tools live
+# in one env here.
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - seqkit=2.10.1
+  - python=3.12

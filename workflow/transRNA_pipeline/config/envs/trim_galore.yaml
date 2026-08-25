@@ -1,0 +1,7 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - trim-galore=0.6.10
+  - cutadapt=5.0
+  - pigz=2.8

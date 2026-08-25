@@ -60,13 +60,16 @@ process FASTQC {
     """
 }
 
-// Aggregates all samples' FastQC zips into one combined report. Runs
-// whenever FASTQC does (no separate skip flag — meaningless without it).
+// Aggregates one step's FastQC zips into one combined report. Called once
+// per QC'd step (report_name picks the output subdir), so it stays a single
+// process instead of being duplicated per step.
 process MULTIQC {
+    tag "${report_name}"
     label 'count_only'
     container 'https://depot.galaxyproject.org/singularity/multiqc:1.27--pyhdfd78af_0'
-    publishDir "${params.outdir}/reports/00_fastqc_raw", mode: 'copy'
-    input:  path(fastqc_zips)
+    publishDir "${params.outdir}/reports/${report_name}", mode: 'copy'
+    input:  val(report_name)
+            path(fastqc_zips)
     output: path("multiqc_report.html")
             path("multiqc_data")
     script:
@@ -82,6 +85,7 @@ process MULTIQC {
 process COUNT_RAW {
     tag "${meta.id}"
     label 'count_only'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/01_raw", mode: 'copy'
     input:  tuple val(meta), path(reads)
     output: tuple val(meta), path("${meta.id}_raw_stats.tsv")
@@ -93,17 +97,49 @@ process COUNT_RAW {
     """
 }
 
+// Runs with TrimGalore's own defaults (quality/stringency/length shown
+// explicitly below); trim_extra_args covers anything else (e.g. explicit
+// adapters). --cores is deliberately not tied to task.cpus: TrimGalore's
+// own docs note actual thread usage runs to ~4x --cores (see cambridge.config).
+process TRIMGALORE {
+    tag "${meta.id}"
+    label 'med'
+    conda "${moduleDir}/config/envs/trim_galore.yaml"
+    publishDir "${params.outdir}/trimmed",            mode: 'copy', pattern: '*_trimmed.fq.gz'
+    publishDir "${params.outdir}/reports/02_trimmed", mode: 'copy', pattern: '*.{txt,html,zip}'
+    input:  tuple val(meta), path(reads)
+    output:
+    tuple val(meta), path("${meta.id}_1_trimmed.fq.gz"), path("${meta.id}_2_trimmed.fq.gz"), emit: reads
+    path("*trimming_report.txt"), emit: reports
+    path("*_fastqc.zip"),         emit: fastqc_zip
+    path("*_fastqc.html"),        emit: fastqc_html
+    script:
+    """
+    trim_galore --paired \
+        --quality ${params.trim_quality} \
+        --stringency ${params.trim_stringency} \
+        --length ${params.trim_length} \
+        --fastqc \
+        --cores ${params.trim_cores} \
+        ${params.trim_extra_args} \
+        ${reads}
+
+    mv *_val_1.f*q.gz ${meta.id}_1_trimmed.fq.gz
+    mv *_val_2.f*q.gz ${meta.id}_2_trimmed.fq.gz
+    """
+}
+
 process COUNT_TRIMMED {
     tag "${meta.id}"
     label 'count_only'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/02_trimmed", mode: 'copy'
-    input:  val(meta)
+    input:  tuple val(meta), path(reads)
     output: tuple val(meta), path("${meta.id}_trimmed_stats.tsv")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz \
-        ${params.trimmed_dir}/${meta.id}_2_trimmed.fq.gz \
+        ${reads} \
         > ${meta.id}_trimmed_stats.tsv
     """
 }
@@ -111,6 +147,7 @@ process COUNT_TRIMMED {
 process COUNT_STAR_UNMAPPED {
     tag "${meta.id}"
     label 'count_only'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/03_star", mode: 'copy'
     input:  val(meta)
     output: tuple val(meta),
@@ -131,6 +168,7 @@ process COUNT_STAR_UNMAPPED {
 process COUNT_BBSPLIT_HOST {
     tag "${meta.id}"
     label 'count_only'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/04a_bbsplit_host", mode: 'copy'
     input:  val(meta)
     output: tuple val(meta), path("${meta.id}_bbsplit_host_stats.tsv")
@@ -146,6 +184,7 @@ process COUNT_BBSPLIT_HOST {
 process COUNT_BBSPLIT_VIRUS {
     tag "${meta.id}"
     label 'count_only'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/04b_bbsplit_virus", mode: 'copy'
     input:  val(meta)
     output: tuple val(meta), path("${meta.id}_bbsplit_virus_stats.tsv")
@@ -161,6 +200,7 @@ process COUNT_BBSPLIT_VIRUS {
 process COUNT_BBSPLIT_MAGS {
     tag "${meta.id}"
     label 'count_only'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/05_no_mags", mode: 'copy'
     input:  val(meta)
     output: tuple val(meta), path("${meta.id}_noMAGs_stats.tsv")
@@ -181,12 +221,13 @@ process COUNT_BBSPLIT_MAGS {
 
 process MAKE_READS_POSTTRIM_TAB {
     label 'count_only'
+    conda "${moduleDir}/config/envs/python_analysis.yaml"
     publishDir "${params.outdir}/reports", mode: 'copy'
     input:  path(trimmed_stats_files)   // all *_trimmed_stats.tsv collected
     output: path("reads_posttrim_tab.tsv")
     script:
     """
-    python3 ${projectDir}/bin/make_reads_posttrim_tab.py
+    python3 ${moduleDir}/bin/make_reads_posttrim_tab.py
     """
 }
 
@@ -215,12 +256,14 @@ process MAKE_READS_POSTTRIM_TAB {
 process COLLAPSE_READS {
     tag "${meta.id}"
     label 'med'
+    conda "${moduleDir}/config/envs/collapse.yaml"
     publishDir "${params.outdir}/collapsed", mode: 'copy'
     input:
     tuple val(meta),
           path(blast1_tsv),
           path(blast2_tsv),
-          path(kraken_tsv)
+          path(kraken_tsv),
+          path(trimmed_reads)
     output:
     tuple val(meta),
           path("${meta.id}_merged_duplicated.detail.txt"),
@@ -238,11 +281,11 @@ process COLLAPSE_READS {
 
     # ── Fetch sequences from trimmed reads ────────────────────────────────────
     seqkit grep -j ${task.cpus} -f blast1_ids.txt \
-        ${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz > blast1_passing.fq
+        ${trimmed_reads[0]} > blast1_passing.fq
     seqkit grep -j ${task.cpus} -f blast2_ids.txt \
-        ${params.trimmed_dir}/${meta.id}_2_trimmed.fq.gz > blast2_passing.fq
+        ${trimmed_reads[1]} > blast2_passing.fq
     seqkit grep -j ${task.cpus} -f kraken_ids.txt \
-        ${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz > kraken_passing.fq
+        ${trimmed_reads[0]} > kraken_passing.fq
 
     # ── Merge and collapse ────────────────────────────────────────────────────
     cat blast1_passing.fq blast2_passing.fq kraken_passing.fq \
@@ -257,7 +300,7 @@ process COLLAPSE_READS {
 
     # ── Collapse summary ──────────────────────────────────────────────────────
     MERGED_READS=\$(awk 'END{print NR/4}' ${meta.id}_merged.fq)
-    python3 ${projectDir}/bin/collapse_stats.py ${meta.id} ${params.min_occ} \${MERGED_READS}
+    python3 ${moduleDir}/bin/collapse_stats.py ${meta.id} ${params.min_occ} \${MERGED_READS}
     """
 }
 
@@ -279,12 +322,13 @@ process COLLAPSE_READS {
 process ANNOTATE_KRAKEN {
     tag "${meta.id}"
     label 'med'
+    conda "${moduleDir}/config/envs/taxonkit.yaml"
     //publishDir "${params.outdir}/kraken_annotated", mode: 'copy'
     input:  val(meta)
     output: tuple val(meta), path("${meta.id}_kraken_annotated.tsv")
     script:
     """
-    python3 ${projectDir}/bin/annotate_kraken_lineage.py \
+    python3 ${moduleDir}/bin/annotate_kraken_lineage.py \
         --input       ${params.kraken_dir}/${meta.id}_2MM_CLEAN_noMAGs_kraken_output_005_.txt \
         --output      ${meta.id}_kraken_annotated.tsv \
     """
@@ -293,6 +337,7 @@ process ANNOTATE_KRAKEN {
 process FILTER_KRAKEN {
     tag "${meta.id}"
     label 'low'
+    conda "${moduleDir}/config/envs/python_core.yaml"
     publishDir "${params.outdir}/kraken_filtered", mode: 'copy'
     input:
     tuple val(meta), path(annotated_tsv)
@@ -302,7 +347,7 @@ process FILTER_KRAKEN {
           path("${meta.id}_kraken_filter_stats.tsv")             // ← new
     script:
     """
-    python3 ${projectDir}/bin/filter_kraken_invertebrates.py \
+    python3 ${moduleDir}/bin/filter_kraken_invertebrates.py \
         --min-len   ${params.min_len} \
         --stats-out ${meta.id}_kraken_filter_stats.tsv \
         ${params.invertebrate_phyla} \
@@ -326,12 +371,13 @@ process FILTER_KRAKEN {
 process ANNOTATE_BLAST {
     tag "${meta.id}_${mate}"
     label 'med'
+    conda "${moduleDir}/config/envs/taxonkit.yaml"
     //publishDir "${params.outdir}/blast_annotated", mode: 'copy'
     input:  tuple val(meta), val(mate)
     output: tuple val(meta), val(mate), path("${meta.id}_${mate}_blast_annotated.tsv")
     script:
     """
-    python3 ${projectDir}/bin/annotate_blast_lineage.py \
+    python3 ${moduleDir}/bin/annotate_blast_lineage.py \
         --input       ${params.blast_dir}/${meta.id}_${mate}.tsv \
         --output      ${meta.id}_${mate}_blast_annotated.tsv \
         --taxid-col   13
@@ -341,6 +387,7 @@ process ANNOTATE_BLAST {
 process FILTER_BLAST {
     tag "${meta.id}_${mate}"
     label 'low'
+    conda "${moduleDir}/config/envs/python_core.yaml"
     publishDir "${params.outdir}/blast_filtered", mode: 'copy'
     input:
     tuple val(meta), val(mate), path(annotated_tsv)
@@ -350,7 +397,7 @@ process FILTER_BLAST {
           path("${meta.id}_${mate}_blast_filter_stats.tsv")      // ← new
     script:
     """
-    python3 ${projectDir}/bin/filter_blast_all_conditions.py \
+    python3 ${moduleDir}/bin/filter_blast_all_conditions.py \
         --min-len   ${params.min_len} \
         --stats-out ${meta.id}_${mate}_blast_filter_stats.tsv \
         ${params.invertebrate_phyla} \
@@ -370,6 +417,7 @@ process FILTER_BLAST {
 process SELECT_CANDIDATES {
     tag "${meta.id}"
     label 'low'
+    conda "${moduleDir}/config/envs/python_core.yaml"
     publishDir "${params.outdir}/candidates", mode: 'copy'
     input:
     tuple val(meta),
@@ -383,7 +431,7 @@ process SELECT_CANDIDATES {
           path("${meta.id}_ge5_detected_weighted_ids.tsv")
     script:
     """
-    python3 ${projectDir}/bin/ge5_18nt_filtering_pipeline_for_both_mates.py \
+    python3 ${moduleDir}/bin/ge5_18nt_filtering_pipeline_for_both_mates.py \
         --mode       filtered \
         --dup-file   ${dup_detail} \
         --fq-file    ${collapsed_clean_fq} \
@@ -404,6 +452,7 @@ process SELECT_CANDIDATES {
 process EXTRACT_FASTA {
     tag "${meta.id}"
     label 'low'
+    conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/final_transRNAs_fasta_collapsed", mode: 'copy'
     input:
     tuple val(meta),
@@ -464,13 +513,14 @@ process PUBLISH_HISTS {
 
 process PLOT_LENGTH_DIST {
     label 'count_only'
+    conda "${moduleDir}/config/envs/python_analysis.yaml"
     publishDir "${params.outdir}/plots", mode: 'copy'
     input:  path(hist_files)
             path(sample_sheet)
     output: path("*.png")          // ← collect all PNGs (both plots)
     script:
     """
-    python3 ${projectDir}/bin/plot_lengths.py . --samplesheet ${sample_sheet}
+    python3 ${moduleDir}/bin/plot_lengths.py . --samplesheet ${sample_sheet}
     """
 }
 
@@ -496,6 +546,7 @@ process PLOT_LENGTH_DIST {
 
 process TAXONOMY_PARSER {
     label 'med'
+    conda "${moduleDir}/config/envs/python_analysis.yaml"
     publishDir "${params.outdir}/final_transRNAs_taxonomies", mode: 'copy'
     input:
     // ids_files: all *_ge5_detected_ids.txt from all samples
@@ -518,7 +569,7 @@ process TAXONOMY_PARSER {
     // All files are staged into the work dir by Nextflow.
     // Point all --*-dir args to "." so the parser scans the work dir.
     """
-    python3 ${projectDir}/bin/04_05_2026_transRNA_taxonomy_parser.py \
+    python3 ${moduleDir}/bin/04_05_2026_transRNA_taxonomy_parser.py \
         --ids-dir     . \
         --blast-dir   . \
         --kraken-dir  . \
@@ -536,13 +587,14 @@ process TAXONOMY_PARSER {
 
 process PLOT_TAXONOMY {
     label 'count_only'
+    conda "${moduleDir}/config/envs/python_analysis.yaml"
     publishDir "${params.outdir}/plots", mode: 'copy'
     input:  path(top10_tsvs)
             path(sample_sheet)
     output: path("*.png")
     script:
     """
-    python3 ${projectDir}/bin/plot_top10_taxa_global_colors.py \
+    python3 ${moduleDir}/bin/plot_top10_taxa_global_colors.py \
         --top10_dir . \
         --outdir    . \
         --threshold ${params.tax_plot_threshold} \
@@ -558,6 +610,7 @@ process PLOT_TAXONOMY {
 
 process AGGREGATE_REPORT {
     label 'count_only'
+    conda "${moduleDir}/config/envs/python_analysis.yaml"
     publishDir "${params.outdir}/reports", mode: 'copy'
     input:
     path(raw_stats)
@@ -578,13 +631,13 @@ process AGGREGATE_REPORT {
     path("virus_exclusion_report.tsv")
     script:
     """
-    python3 ${projectDir}/bin/aggregate_report.py \
+    python3 ${moduleDir}/bin/aggregate_report.py \
         --output          pipeline_read_counts_report.tsv \
         --summary-output  dataset_summary_report.tsv \
         --virus-output    virus_exclusion_report.tsv \
         --samplesheet     ${sample_sheet}
 
-    python3 ${projectDir}/bin/report_to_html.py \
+    python3 ${moduleDir}/bin/report_to_html.py \
         pipeline_read_counts_report.tsv \
         pipeline_read_counts_report.html \
         ${sample_sheet}
@@ -599,7 +652,7 @@ workflow {
 
     // ── Read + validate the sample sheet (nf-schema) ──────────────────────────
     ch_samplesheet = Channel.fromList(
-            samplesheetToList(params.sample_sheet, "${projectDir}/assets/schema_input.json")
+            samplesheetToList(params.sample_sheet, "${moduleDir}/assets/schema_input.json")
         )
         .map { meta, fastq_1, fastq_2 ->
             meta.group = resolveGroup(meta)
@@ -619,7 +672,26 @@ workflow {
     // of skip_count_reports: this is QC, not a read-count accounting step.
     if (!params.skip_fastqc) {
         FASTQC(samples_full_ch)
-        MULTIQC(FASTQC.out.map { meta, html, zip -> zip }.flatten().collect())
+        MULTIQC('00_fastqc_raw', FASTQC.out.map { meta, html, zip -> zip }.flatten().collect())
+    }
+
+    // ── Adapter/quality trimming (TrimGalore) ─────────────────────────────────
+    // Skippable via skip_trimming — falls back to pre-trimmed reads already
+    // in params.trimmed_dir, matching {sample}_{1,2}_trimmed.fq.gz.
+    if (!params.skip_trimming) {
+        TRIMGALORE(samples_full_ch)
+        trimmed_reads_ch = TRIMGALORE.out.reads.map { meta, r1, r2 -> tuple(meta, [r1, r2]) }
+
+        if (!params.skip_fastqc) {
+            MULTIQC('02_trimmed', TRIMGALORE.out.fastqc_zip.collect())
+        }
+    } else {
+        trimmed_reads_ch = samples_ch.map { meta ->
+            tuple(meta, [
+                file("${params.trimmed_dir}/${meta.id}_1_trimmed.fq.gz", checkIfExists: true),
+                file("${params.trimmed_dir}/${meta.id}_2_trimmed.fq.gz", checkIfExists: true)
+            ])
+        }
     }
 
     // ── Read count reports at every pre-computed step ─────────────────────────
@@ -628,7 +700,7 @@ workflow {
     // If taxonomy is still needed, reads_posttrim_tab.tsv is loaded from disk.
     if (!params.skip_count_reports) {
         raw_ch     = COUNT_RAW(samples_full_ch)
-        trimmed_ch = COUNT_TRIMMED(samples_ch)
+        trimmed_ch = COUNT_TRIMMED(trimmed_reads_ch)
         star_ch    = COUNT_STAR_UNMAPPED(samples_ch)
         host_ch    = COUNT_BBSPLIT_HOST(samples_ch)
         virus_ch   = COUNT_BBSPLIT_VIRUS(samples_ch)
@@ -679,6 +751,7 @@ workflow {
         collapse_input_ch = blast1_ch
             .join(blast2_ch,          by: 0)
             .join(kraken_filtered_ch, by: 0)
+            .join(trimmed_reads_ch,   by: 0)
         collapse_ch = COLLAPSE_READS(collapse_input_ch)
     } else {
         collapse_ch = samples_ch.map { meta ->
