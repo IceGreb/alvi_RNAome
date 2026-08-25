@@ -62,10 +62,10 @@ the comments in `params.yml` for the exact expected filenames.
 ## Pipeline steps and outputs
 
 ```
-Step 0   RAW-READ QC (FastQC — vendored nf-core module, runs via Singularity)
-           Skippable via skip_fastqc. First thing done to the raw reads,
-           same placement as nf-core/mag's own FASTQC_RAW step.
+Step 0   RAW-READ QC (FastQC + MultiQC, self-authored, run via Singularity)
+           Skippable via skip_fastqc. First thing done to the raw reads.
            → reports/00_fastqc_raw/{sample}_{1,2}_fastqc.{html,zip}
+           → reports/00_fastqc_raw/multiqc_report.html
 
 Step 1   Raw reads (fq.gz, paths from samples.csv fastq_1/fastq_2)
            → reports/01_raw/{sample}_raw_stats.tsv
@@ -219,14 +219,13 @@ python/3.11  (+ pip install pandas numpy matplotlib seaborn biopython)
 seqkit/2.8.0
 taxonkit/0.17.0
 nextflow/24.04.4
-singularity/apptainer  (only for vendored nf-core modules, e.g. FastQC — see below)
+singularity/apptainer  (only for the FASTQC process — see below)
 ```
 
-Vendored nf-core modules (`modules/nf-core/`) run in their own Singularity container,
-pulled automatically on first use — no manual install needed for those tools
-specifically (e.g. `fastqc` is *not* required in the shared conda env). Everything
-else in the pipeline still runs via the conda env activated in `cambridge.config`'s
-`beforeScript`, so the two execution styles coexist per-process.
+The `FASTQC` process declares its own `container` and runs via Singularity, pulled
+automatically on first use — `fastqc` is *not* required in the shared conda env.
+Everything else in the pipeline still runs via the conda env activated in
+`cambridge.config`'s `beforeScript`, so the two execution styles coexist per-process.
 
 ---
 
@@ -240,8 +239,8 @@ else in the pipeline still runs via the conda env activated in `cambridge.config
   `samples.csv`. Nextflow downloads it automatically the first time the pipeline runs,
   so the login node needs outbound internet access on that first run; after that it's
   cached locally (`~/.nextflow/plugins`) and no further downloads are needed.
-- Similarly, vendored nf-core modules' Singularity images are pulled on first use and
-  cached under `NXF_SINGULARITY_CACHEDIR` (or `~/.singularity/cache` if that env var
-  isn't set) — set `NXF_SINGULARITY_CACHEDIR` to somewhere outside your home quota
+- Similarly, `FASTQC`'s Singularity image is pulled on first use and cached under
+  `NXF_SINGULARITY_CACHEDIR` (or `~/.singularity/cache` if that env var isn't set)
+  — set `NXF_SINGULARITY_CACHEDIR` to somewhere outside your home quota
   (e.g. `export NXF_SINGULARITY_CACHEDIR=<path>/hpc-work/singularity_cache` in
   `~/.bashrc`) before the first run.

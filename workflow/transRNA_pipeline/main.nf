@@ -28,7 +28,6 @@ nextflow.enable.dsl = 2
 */
 
 include { samplesheetToList } from 'plugin/nf-schema'
-include { FASTQC            } from './modules/nf-core/fastqc/main.nf'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,6 +40,39 @@ def isBlank(v) {
 // key on without any pipeline logic needing to special-case "no group".
 def resolveGroup(meta) {
     return isBlank(meta.group) ? meta.id : meta.group
+}
+
+// ============================================================================
+//  RAW-READ QC (FastQC)
+//  Skippable via params.skip_fastqc.
+// ============================================================================
+
+process FASTQC {
+    tag "${meta.id}"
+    label 'count_only'
+    container 'https://depot.galaxyproject.org/singularity/fastqc:0.12.1--hdfd78af_0'
+    publishDir "${params.outdir}/reports/00_fastqc_raw", mode: 'copy'
+    input:  tuple val(meta), path(reads)
+    output: tuple val(meta), path("*_fastqc.html"), path("*_fastqc.zip")
+    script:
+    """
+    fastqc --threads ${task.cpus} ${reads}
+    """
+}
+
+// Aggregates all samples' FastQC zips into one combined report. Runs
+// whenever FASTQC does (no separate skip flag — meaningless without it).
+process MULTIQC {
+    label 'count_only'
+    container 'https://depot.galaxyproject.org/singularity/multiqc:1.27--pyhdfd78af_0'
+    publishDir "${params.outdir}/reports/00_fastqc_raw", mode: 'copy'
+    input:  path(fastqc_zips)
+    output: path("multiqc_report.html")
+            path("multiqc_data")
+    script:
+    """
+    multiqc .
+    """
 }
 
 // ============================================================================
@@ -582,11 +614,12 @@ workflow {
         .collectFile(name: "resolved_samplesheet.csv", newLine: true)
         .first()
 
-    // ── Raw-read QC (FastQC, vendored nf-core module) ─────────────────────────
+    // ── Raw-read QC (FastQC) ───────────────────────────────────────────────────
     // First thing done to the raw reads, before anything else. Independent
     // of skip_count_reports: this is QC, not a read-count accounting step.
     if (!params.skip_fastqc) {
         FASTQC(samples_full_ch)
+        MULTIQC(FASTQC.out.map { meta, html, zip -> zip }.flatten().collect())
     }
 
     // ── Read count reports at every pre-computed step ─────────────────────────

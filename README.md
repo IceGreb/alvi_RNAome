@@ -79,16 +79,9 @@ section for the sample sheet format.
 * `workflow/transRNA_pipeline/nextflow.config` — Global Nextflow configuration: plugins
   (`nf-schema`), profiles, process labels, work directory, cache mode (`lenient` for RDS NFS
   jitter), and pipeline reports (HTML, timeline, DAG, trace).
-* `workflow/transRNA_pipeline/modules.config` — Per-process configuration (publishDir,
-  options) for vendored nf-core modules — see `modules/` below.
 * `workflow/transRNA_pipeline/cambridge.config` — CSD3-specific SLURM executor settings,
-  partition/resource assignments per process label (`count_only`/`low`/`med`/`high` for this
-  pipeline's own processes; `process_single`/`process_low`/`process_medium`/`process_high`
-  for vendored nf-core modules), and Singularity settings.
-* `workflow/transRNA_pipeline/modules/nf-core/` — Nf-core modules vendored unmodified from
-  [nf-core/modules](https://github.com/nf-core/modules) (currently: `fastqc`), so they stay
-  easy to re-sync from upstream. Module-specific options live in `modules.config`, not in
-  these files, to keep them pristine.
+  partition/resource assignments per process label (`count_only`/`low`/`med`/`high`), and
+  Singularity settings (used by the self-authored `FASTQC` process — see below).
 * `workflow/transRNA_pipeline/params.yml` — All user-configurable parameters: input data paths,
   output directory, filtering thresholds (`min_occ`, `min_len`), taxonomy priority, plot
   parameters, and skip flags for modular reruns.
