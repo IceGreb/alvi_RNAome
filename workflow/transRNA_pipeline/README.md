@@ -55,8 +55,15 @@ positional fields — again the same pattern nf-core pipelines use.
 Trimming (TrimGalore) and host-genome alignment (STAR) are run by the
 pipeline itself — see Steps 2 and 3 below. Every other pre-computed input
 (BBsplit outputs, Kraken2 output, BLAST output) is still located via the
-directory params in `params.yml` plus a fixed per-sample filename convention
-— see the comments in `params.yml` for the exact expected filenames.
+directory params in `params.config` plus a fixed per-sample filename
+convention — see the comments in `params.config` for the exact expected
+filenames.
+
+Your own project's actual parameters (genome/annotation reference paths,
+project-specific tool flags) are documented separately in
+`config/params/alvi_rnaome.yml`, passed via `-params-file` to override
+individual defaults from this generic `params.config` — see that file's own
+comments.
 
 ---
 
@@ -73,7 +80,7 @@ Step 1   Raw reads (fq.gz, paths from samples.csv fastq_1/fastq_2)
 
 Step 2   ADAPTER/QUALITY TRIMMING (TrimGalore, run by the pipeline)
            Runs with TrimGalore's own defaults (quality 20, stringency 1,
-           length 20 — see params.yml to adjust, or trim_extra_args for
+           length 20 — see params.config to adjust, or trim_extra_args for
            anything else, e.g. explicit adapters). Skippable via
            skip_trimming (falls back to pre-trimmed reads in trimmed_dir).
            Also runs TrimGalore's own --fastqc, aggregated by a second
@@ -88,7 +95,8 @@ Step 2   ADAPTER/QUALITY TRIMMING (TrimGalore, run by the pipeline)
 Step 3   HOST-GENOME ALIGNMENT (STAR, run by the pipeline)
            Only structural flags are hard-coded (genomeDir, readFilesCommand,
            outSAMtype, outReadsUnmapped) — alignment sensitivity stays at
-           STAR's own defaults; anything else goes in star_extra_args.
+           STAR's own defaults; anything else goes in star_extra_args (see
+           config/params/alvi_rnaome.yml for the project's actual settings).
            Skippable via skip_star (falls back to pre-computed unmapped
            reads in star_dir). Log.final.out aggregated by a third MultiQC
            report (skippable via skip_fastqc, same as Steps 0 and 2).
@@ -279,6 +287,6 @@ is needed too, but only for those.
   (e.g. `export NXF_SINGULARITY_CACHEDIR=<path>/hpc-work/singularity_cache` in
   `~/.bashrc`) before the first run.
 - Same idea for the per-process conda envs (`config/envs/*.yaml`): set
-  `params.conda_cache_dir` in `params.yml` to a persistent path outside your
-  home quota before the first run — each env is built there once (a few
+  `params.conda_cache_dir` in `cambridge.config` to a persistent path outside
+  your home quota before the first run — each env is built there once (a few
   minutes total) and reused after that, on every subsequent run.

@@ -89,9 +89,15 @@ section for the sample sheet format.
   cluster (e.g. `seqkit.yaml`, `trim_galore.yaml`), referenced by each process's own `conda "..."`
   directive in `main.nf`. Nextflow builds/caches each one itself — no manual install, no shared
   pre-built environment to configure by hand.
-* `workflow/transRNA_pipeline/params.yml` — All user-configurable parameters: input data paths,
-  output directory, filtering thresholds (`min_occ`, `min_len`), taxonomy priority, plot
-  parameters, and skip flags for modular reruns.
+* `workflow/transRNA_pipeline/config/params/alvi_rnaome.yml` — The actual parameters (genome/
+  annotation reference paths, project-specific tool flags) used for this project's own analysis,
+  passed via `-params-file` to override individual defaults from `params.config`. Keeps the
+  pipeline itself generic while documenting exactly what was used for the published results.
+* `workflow/transRNA_pipeline/params.config` — All pipeline-wide default parameters: input data
+  paths, output directory, filtering thresholds (`min_occ`, `min_len`), taxonomy priority, plot
+  parameters, and skip flags for modular reruns. Always loaded (via `includeConfig` in
+  `nextflow.config`), so a project's own `-params-file` (e.g. `alvi_rnaome.yml` above) can
+  override individual values here.
 * `workflow/transRNA_pipeline/samples.csv` — User-provided, gitignored sample sheet
   (`sample,group,fastq_1,fastq_2`); see *Samples* above.
 * `workflow/transRNA_pipeline/run.sh` — Launch script for CSD3. Submits the Nextflow master

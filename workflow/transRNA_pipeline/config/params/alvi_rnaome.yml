@@ -1,0 +1,125 @@
+# =============================================================================
+#  alvi_rnaome.yml — These are the actual project parameters
+#  (Apis mellifera transmissible RNAome, RJ/ST manuscript dataset)
+#
+#  Run with:
+#    bash run.sh --params-file config/params/alvi_rnaome.yml
+#    (or directly: nextflow run main.nf -profile cambridge
+#       -params-file config/params/alvi_rnaome.yml --partition ... --project ...)
+#
+#  Layers on top of the pipeline's own default params (params.config, always
+#  loaded) — only values that differ for this project need to be here.
+#  Nextflow only allows one -params-file per run, and it always overrides
+#  params.config's params {} block regardless of command-line order, so this
+#  file only needs to list what's actually different — the pipeline itself
+#  stays generic and reusable, and this file documents the exact paths and
+#  tool parameters actually used for the published analysis.
+#
+# =============================================================================
+
+# ── Samples ──────────────────────────────────────────────────────────────────
+#
+# Point this at the real sample sheet for this project — see samples.csv format in the pipeline README).
+#
+sample_sheet: "<path/to/your/real/samples.csv>"
+
+# ── Genome & annotation references ──────────────────────────────────────────
+
+# Apis mellifera (honeybee host genome) — RefSeq assembly GCF_003254395.2,
+# Amel_HAv3.1. STAR index confirmed already built (SA, SAindex, sjdb* etc.
+# present) at:
+star_genome_dir: "/home/nv358/rds/hpc-work/transmissible_RNA/refs/ncbi_dataset/data/GCF_003254395.2"
+# GTF the index above was built from:
+star_gtf: "/home/nv358/rds/hpc-work/transmissible_RNA/refs/ncbi_dataset/data/GCF_003254395.2/genomic.gtf"
+# Same assembly, plain genome FASTA — a separate copy used as a bbsplit
+# reference (not the STAR index itself):
+apis_mellifera_genome_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/apis_mellifera_genome/data/GCF_003254395.2/GCF_003254395.2_Amel_HAv3.1_genomic.fna"
+
+# Human genome — Ensembl GRCh38 primary assembly (host/contaminant
+# decontamination reference):
+human_genome_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+
+# Varroa destructor (honeybee parasitic mite) — found used alongside human
+# and viral references in the real bbsplit host-decontamination step
+# (scripts/slurm/bbsplit_NEW.sh). Not previously in params.config — flagging in
+# case the pipeline's own decontamination step should include it too:
+varroa_genome_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/varroa_davide/old/varroa_destructor_genome/data/GCF_002443255.2/GCF_002443255.2_Vdes_3.0_genomic.fna"
+
+# 12 honeybee viral genomes (BBsplit antiviral decontamination — "Decon-b" in
+# the aggregate report). Combined fasta (confirmed exists) + the directory of
+# individual per-virus files it's built from (ABPV, BMLV, BQCV-IT1, CBPV,
+# DWV, IAPV, KBV, LSV [1-4 + all], SBPV, SBV, VDV-1):
+viral_genomes_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/honeybee_viruses/all_viral_genomes.fna"
+viral_genomes_dir:   "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/honeybee_viruses"
+
+# Invertebrate phyla exclusion list (filter_kraken_invertebrates.py /
+# filter_blast_all_conditions.py). Multiple copies found on disk; using the
+# one under out/blast/RISC/ — worth confirming this is the canonical one:
+invertebrate_phyla: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/out/blast/RISC/invertebrate_phyla.txt"
+
+# Kraken2 database — for when Kraken2 itself becomes a real pipeline step
+# (currently params.config's kraken_dir is pre-computed Kraken2 *output*, not
+# this). UNRESOLVED: multiple dated builds found, none obviously "the" one
+# used for the RJ/ST manuscript run:
+#   .../in/ref_genomes/kraken_db/11_01_2026/
+#   .../in/ref_genomes/kraken_db/14_10_2025_PlusPFP/
+#   .../in/ref_genomes/kraken_db/31_12_2025/
+#   .../in/ref_genomes/kraken_db/core_nt/
+kraken2_db: "<unresolved — see candidates above, needs your confirmation>"
+
+# BLAST database — NCBI core_nt (confirmed present). For when BLAST itself
+# becomes a real pipeline step (currently params.config's blast_dir is
+# pre-computed BLAST *output*, not this):
+blast_nt_db: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/blast_core_nt/core_nt"
+
+# taxonkit NCBI taxonomy database (confirmed populated):
+taxonkit_db: "/home/nv358/.taxonkit"
+
+# ── TrimGalore — actual project run (pipeline itself uses tool defaults) ─────
+# Verified 2026-08-26 against the trimming_report.txt in
+# scripts/nextflow/nf-core_rnaseq/out/all_samples_run_Dec_24/trimgalore/
+# (RJ1_trimmed_1.fastq.gz_trimming_report.txt etc.) — this is the pass whose
+# output (.../trimgalore/rest/*_val_*.fq.gz) directly fed the verified STAR
+# run above, and the same values are recorded in a second, independent copy
+# under out/new_manual_run/trimgalore/. One caveat: this confirms the
+# reported *settings*, not a captured log of the pair-validation step
+# actually enforcing 15bp (unlike the earlier raw-pass check) — the
+# underlying Nextflow work directories appear to no longer exist.
+#
+#   --quality 20               Phred quality cutoff
+#   -a AGATCGGAAGAGC            adapter (read 1)
+#   -a2 GATCGTCGGACT            adapter (read 2)
+#   -e 0.1                      max trimming error rate (10%)
+#   --stringency 1              min adapter-overlap (bp) required to trim
+#   --length 15                 discard a read pair if either read is <15bp
+#                                after trimming (params.config's own generic
+#                                default is 20 — overridden below)
+#   --trim-n                    remove Ns from the start/end of reads
+#
+# quality/stringency happen to already match params.config's own tool-default
+# values, but are restated here for a complete, self-contained record of
+# what was actually run.
+trim_quality:     20
+trim_stringency:  1
+trim_length:      15
+trim_extra_args: "-a AGATCGGAAGAGC -a2 GATCGTCGGACT --trim-n"
+
+# ── STAR — actual project run (pipeline itself uses structural defaults) ─────
+
+star_extra_args: >-
+  --alignEndsType EndToEnd
+  --outFilterMismatchNmax 2
+  --outFilterMultimapNmax 1000
+  --outFilterMultimapScoreRange 0
+  --outFilterMatchNmin 16
+  --outFilterScoreMinOverLread 0
+  --outFilterMatchNminOverLread 0
+  --alignIntronMax 0
+  --alignSJDBoverhangMin 3
+  --alignTranscriptsPerReadNmax 100000
+  --quantMode TranscriptomeSAM GeneCounts
+  --outSAMunmapped Within
+  --outSAMattributes NH HI AS nM
+  --outWigType wiggle
+  --outWigStrand Stranded
+  --outWigNorm RPM
