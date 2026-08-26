@@ -144,24 +144,49 @@ process COUNT_TRIMMED {
     """
 }
 
+// Structural flags only (genomeDir, readFilesCommand, outSAMtype,
+// outReadsUnmapped are needed for this pipeline's own data flow); alignment
+// sensitivity stays at STAR's own defaults. star_extra_args covers anything
+// else (e.g. project-specific filtering — see config/params/alvi_rnaome.yml).
+process STAR {
+    tag "${meta.id}"
+    label 'high'
+    conda "${moduleDir}/config/envs/star.yaml"
+    publishDir "${params.outdir}/star", mode: 'copy', pattern: '*.bam'
+    input:  tuple val(meta), path(reads)
+    output:
+    tuple val(meta), path("${meta.id}_Unmapped.out.mate1"), path("${meta.id}_Unmapped.out.mate2"), emit: unmapped
+    tuple val(meta), path("${meta.id}_Log.final.out"),                                             emit: log_final
+    path("${meta.id}_Aligned.sortedByCoord.out.bam"),                                               emit: bam
+    script:
+    """
+    STAR --runThreadN ${task.cpus} \
+        --genomeDir ${params.star_genome_dir} \
+        --readFilesIn ${reads} \
+        --readFilesCommand zcat \
+        --outSAMtype BAM SortedByCoordinate \
+        --outReadsUnmapped Fastx \
+        --outFileNamePrefix ${meta.id}_ \
+        ${params.star_extra_args}
+    """
+}
+
 process COUNT_STAR_UNMAPPED {
     tag "${meta.id}"
     label 'count_only'
     conda "${moduleDir}/config/envs/seqkit.yaml"
     publishDir "${params.outdir}/reports/03_star", mode: 'copy'
-    input:  val(meta)
+    input:  tuple val(meta), path(unmapped_reads), path(log_final, stageAs: 'input_log_final.out')
     output: tuple val(meta),
                   path("${meta.id}_star_unmapped_stats.tsv"),
                   path("${meta.id}_Log.final.out")
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate1 \
-        ${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate2 \
+        ${unmapped_reads} \
         > ${meta.id}_star_unmapped_stats.tsv
 
-    cp ${params.star_dir}/${meta.id}/Log.final.out \
-       ${meta.id}_Log.final.out
+    cp ${log_final} ${meta.id}_Log.final.out
     """
 }
 
@@ -694,6 +719,30 @@ workflow {
         }
     }
 
+    // ── Host-genome alignment (STAR) ──────────────────────────────────────────
+    // Skippable via skip_star — falls back to pre-computed unmapped reads
+    // already in params.star_dir, matching {sample}/{sample}_Unmapped.out.mate{1,2}.
+    if (!params.skip_star) {
+        STAR(trimmed_reads_ch)
+        star_out_ch = STAR.out.unmapped
+            .join(STAR.out.log_final, by: 0)
+            .map { meta, r1, r2, log -> tuple(meta, [r1, r2], log) }
+
+        if (!params.skip_fastqc) {
+            MULTIQC('03_star', STAR.out.log_final.map { meta, log -> log }.collect())
+        }
+    } else {
+        star_out_ch = samples_ch.map { meta ->
+            tuple(meta,
+                [
+                    file("${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate1", checkIfExists: true),
+                    file("${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate2", checkIfExists: true)
+                ],
+                file("${params.star_dir}/${meta.id}/Log.final.out", checkIfExists: true)
+            )
+        }
+    }
+
     // ── Read count reports at every pre-computed step ─────────────────────────
     // Skippable via params.skip_count_reports.
     // When skipped, AGGREGATE_REPORT is also disabled (no stats to aggregate).
@@ -701,7 +750,7 @@ workflow {
     if (!params.skip_count_reports) {
         raw_ch     = COUNT_RAW(samples_full_ch)
         trimmed_ch = COUNT_TRIMMED(trimmed_reads_ch)
-        star_ch    = COUNT_STAR_UNMAPPED(samples_ch)
+        star_ch    = COUNT_STAR_UNMAPPED(star_out_ch)
         host_ch    = COUNT_BBSPLIT_HOST(samples_ch)
         virus_ch   = COUNT_BBSPLIT_VIRUS(samples_ch)
         nomags_ch  = COUNT_BBSPLIT_MAGS(samples_ch)

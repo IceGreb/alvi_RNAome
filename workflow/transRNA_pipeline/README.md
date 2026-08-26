@@ -52,11 +52,11 @@ unique, and fails fast with a clear error if not. Each sample's resolved
 (`meta`) attached to every channel item, rather than as separate
 positional fields — again the same pattern nf-core pipelines use.
 
-Trimming (TrimGalore) is run by the pipeline itself — see Step 2 below.
-Every other pre-computed input (STAR unmapped reads, BBsplit outputs,
-Kraken2 output, BLAST output) is still located via the directory params in
-`params.yml` plus a fixed per-sample filename convention — see the comments
-in `params.yml` for the exact expected filenames.
+Trimming (TrimGalore) and host-genome alignment (STAR) are run by the
+pipeline itself — see Steps 2 and 3 below. Every other pre-computed input
+(BBsplit outputs, Kraken2 output, BLAST output) is still located via the
+directory params in `params.yml` plus a fixed per-sample filename convention
+— see the comments in `params.yml` for the exact expected filenames.
 
 ---
 
@@ -85,9 +85,17 @@ Step 2   ADAPTER/QUALITY TRIMMING (TrimGalore, run by the pipeline)
            → reports/02_trimmed/{sample}_trimmed_stats.tsv
            → reports/reads_posttrim_tab.tsv            ← produced fresh here
 
-Step 3   STAR unmapped reads (pre-computed)
+Step 3   HOST-GENOME ALIGNMENT (STAR, run by the pipeline)
+           Only structural flags are hard-coded (genomeDir, readFilesCommand,
+           outSAMtype, outReadsUnmapped) — alignment sensitivity stays at
+           STAR's own defaults; anything else goes in star_extra_args.
+           Skippable via skip_star (falls back to pre-computed unmapped
+           reads in star_dir). Log.final.out aggregated by a third MultiQC
+           report (skippable via skip_fastqc, same as Steps 0 and 2).
+           → star/{sample}_Aligned.sortedByCoord.out.bam
            → reports/03_star/{sample}_star_unmapped_stats.tsv
            → reports/03_star/{sample}_Log.final.out
+           → reports/03_star/multiqc_report.html
 
 Step 4a  BBsplit host/human filtered (pre-computed)
            → reports/04a_bbsplit_host/{sample}_bbsplit_host_stats.tsv
@@ -239,6 +247,7 @@ directive pointing at a small, version-pinned file in `config/envs/`:
 | Env file | Used by | Contains |
 |---|---|---|
 | `trim_galore.yaml` | `TRIMGALORE` | trim-galore, cutadapt, pigz |
+| `star.yaml` | `STAR` | star |
 | `seqkit.yaml` | `COUNT_*`, `EXTRACT_FASTA` | seqkit |
 | `collapse.yaml` | `COLLAPSE_READS` | seqkit, python (calls both) |
 | `taxonkit.yaml` | `ANNOTATE_KRAKEN`, `ANNOTATE_BLAST` | taxonkit, python (scripts shell out to taxonkit) |
