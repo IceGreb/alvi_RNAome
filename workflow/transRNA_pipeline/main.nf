@@ -190,6 +190,46 @@ process COUNT_STAR_UNMAPPED {
     """
 }
 
+// ============================================================================
+//  BBSPLIT  (pipeline step 4)
+//  Decontaminates STAR's unmapped reads against host (bee) + human + viral
+//  references. STAR's own mapping only ever screens against the bee genome,
+//  so this catches human/viral contamination STAR alone can't -- see the
+//  synthetic-read snoRNA contamination test (31_08_2026) for validation of
+//  this exact reference set and parameters.
+//
+//  Only structural flags (in1/in2, ref, basename, outu1/outu2, refstats) are
+//  hard-coded here -- alignment sensitivity is left at BBSplit's own
+//  defaults, with project-specific tuning passed through bbsplit_extra_args
+//  (see config/params/alvi_rnaome.yml).
+//
+//  NOTE: COUNT_BBSPLIT_HOST/VIRUS/MAGS below still read from the separate
+//  externally-computed params.bbsplit_*_dir directories -- not yet wired to
+//  this process's own output. That rewiring is a deliberate follow-up step,
+//  not done here.
+// ============================================================================
+
+process BBSPLIT {
+    tag "${meta.id}"
+    label 'high'
+    conda "${moduleDir}/config/envs/bbsplit.yaml"
+    publishDir "${params.outdir}/bbsplit", mode: 'copy',
+        pattern: params.bbsplit_keep_matched ? "*" : "*_unmatched_{1,2}.fq,*_refstats.txt"
+    input:  tuple val(meta), path(unmapped_reads)   // STAR.out.unmapped: [mate1, mate2]
+    output:
+    tuple val(meta), path("${meta.id}_bbsplit_unmatched_1.fq"), path("${meta.id}_bbsplit_unmatched_2.fq"), emit: unmatched
+    tuple val(meta), path("${meta.id}_bbsplit_refstats.txt"),                                              emit: refstats
+    script:
+    """
+    bbsplit.sh in1=${unmapped_reads[0]} in2=${unmapped_reads[1]} \
+        ref=${params.apis_mellifera_genome_fasta},${params.viral_genomes_fasta},${params.human_genome_fasta} \
+        basename=${meta.id}_bbsplit_%.fq \
+        outu1=${meta.id}_bbsplit_unmatched_1.fq outu2=${meta.id}_bbsplit_unmatched_2.fq \
+        refstats=${meta.id}_bbsplit_refstats.txt \
+        ${params.bbsplit_extra_args}
+    """
+}
+
 process COUNT_BBSPLIT_HOST {
     tag "${meta.id}"
     label 'count_only'
@@ -739,6 +779,25 @@ workflow {
                     file("${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate2", checkIfExists: true)
                 ],
                 file("${params.star_dir}/${meta.id}/Log.final.out", checkIfExists: true)
+            )
+        }
+    }
+
+    // ── Decontamination (BBSplit) — pipeline step 4 ───────────────────────────
+    // Skippable via skip_bbsplit — falls back to pre-computed unmatched reads
+    // already in params.bbsplit_dir, matching
+    // {sample}/{sample}_bbsplit_unmatched_{1,2}.fq.
+    // Not yet consumed downstream (COLLAPSE_READS et al. still run on their
+    // existing inputs) -- this wiring is a deliberate follow-up step.
+    if (!params.skip_bbsplit) {
+        bbsplit_in_ch = star_out_ch.map { meta, reads, log -> tuple(meta, reads) }
+        BBSPLIT(bbsplit_in_ch)
+        bbsplit_out_ch = BBSPLIT.out.unmatched
+    } else {
+        bbsplit_out_ch = samples_ch.map { meta ->
+            tuple(meta,
+                file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_unmatched_1.fq", checkIfExists: true),
+                file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_unmatched_2.fq", checkIfExists: true)
             )
         }
     }

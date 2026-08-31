@@ -123,3 +123,11 @@ star_extra_args: >-
   --outWigType wiggle
   --outWigStrand Stranded
   --outWigNorm RPM
+
+# ── BBSplit — actual project run (pipeline itself uses structural defaults) ──
+# ref genomes: apis_mellifera_genome_fasta + viral_genomes_fasta +
+# human_genome_fasta (above) -- the exact 3-genome set validated this week
+# (bbsplit_on_RISC.sh, and the synthetic-read human-snoRNA contamination
+# test) -- varroa_genome_fasta deliberately left out here since that
+# combination hasn't been run/validated together yet.
+bbsplit_extra_args: "minid=0.93 k=15 maxindel=200k ambig2=split"
