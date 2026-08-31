@@ -105,11 +105,18 @@ Step 3   HOST-GENOME ALIGNMENT (STAR, run by the pipeline)
            → reports/03_star/{sample}_Log.final.out
            → reports/03_star/multiqc_report.html
 
-Step 4a  BBsplit host/human filtered (pre-computed)
-           → reports/04a_bbsplit_host/{sample}_bbsplit_host_stats.tsv
-
-Step 4b  BBsplit antiviral filtered (pre-computed)
-           → reports/04b_bbsplit_virus/{sample}_bbsplit_virus_stats.tsv
+Step 4   DECONTAMINATION (BBSplit, run by the pipeline)
+           Only structural flags are hard-coded (in1/in2, ref, basename,
+           outu1/outu2, refstats) — alignment sensitivity stays at BBSplit's
+           own defaults; anything else goes in bbsplit_extra_args (see
+           config/params/alvi_rnaome.yml for the project's actual 3-genome
+           reference set and tuning). Skippable via skip_bbsplit (falls
+           back to pre-computed unmatched reads in bbsplit_dir). Per-
+           reference match % is read straight from BBSplit's own
+           refstats.txt into the final report — one column per reference
+           genome actually used, however many that is.
+           → bbsplit/{sample}_bbsplit_unmatched_{1,2}.fq
+           → bbsplit/{sample}_bbsplit_refstats.txt
 
 Step 5   BBsplit MAG-clean reads (pre-computed)
            → reports/05_no_mags/{sample}_noMAGs_stats.tsv

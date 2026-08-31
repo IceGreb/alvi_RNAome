@@ -10,8 +10,10 @@ Column sources (per sample, in report order):
   Trimmed                                  <- trimmed seqkit stats (both mates summed)
   STAR mapped %                            <- Log.final.out (unique + multi-mapped %)
   STAR unmapped                            <- star_unmapped seqkit stats (both mates)
-  Decon-a: Host+Human matched %            <- (STAR_unmapped - host_survivors) / STAR_unmapped * 100
-  Decon-b: 12 viral matched %              <- (host_survivors - virus_survivors) / host_survivors * 100
+  BBSplit: {ref} matched %                 <- one column per reference genome BBSplit was run
+                                              with, read straight from its own refstats.txt
+                                              (%unambiguousReads + %ambiguousReads for that
+                                              reference, exactly as BBSplit reports them)
   MAGs matched %                           <- (virus_survivors - mags_survivors) / virus_survivors * 100
   Candidate transRNAs total reads          <- mags_survivors (reads entering BLAST/Kraken)
   Kraken classified %                      <- kraken C-reads / mags_survivors * 100
@@ -41,14 +43,13 @@ SEQKIT_PATTERNS = {
     "raw":          re.compile(r"^(.+)_raw_stats\.tsv$"),
     "trimmed":      re.compile(r"^(.+)_trimmed_stats\.tsv$"),
     "star_unmapped":re.compile(r"^(.+)_star_unmapped_stats\.tsv$"),
-    "host":         re.compile(r"^(.+)_bbsplit_host_stats\.tsv$"),
-    "virus":        re.compile(r"^(.+)_bbsplit_virus_stats\.tsv$"),
     "mags":         re.compile(r"^(.+)_noMAGs_stats\.tsv$"),
 }
-COLLAPSE_RE = re.compile(r"^(.+)_collapse_stats\.tsv$")
-WIDS_RE     = re.compile(r"^(.+)_ge5_detected_weighted_ids\.tsv$")
-STARLOG_RE  = re.compile(r"^(.+)_Log\.final\.out$")
-MATE_RE     = re.compile(r"_[12]$")
+COLLAPSE_RE  = re.compile(r"^(.+)_collapse_stats\.tsv$")
+WIDS_RE      = re.compile(r"^(.+)_ge5_detected_weighted_ids\.tsv$")
+STARLOG_RE   = re.compile(r"^(.+)_Log\.final\.out$")
+REFSTATS_RE  = re.compile(r"^(.+)_bbsplit_refstats\.txt$")
+MATE_RE      = re.compile(r"_[12]$")
 
 
 def load_samplesheet(path: str) -> dict:
@@ -104,6 +105,25 @@ def parse_star_log(path: Path) -> float:
     return round(unique_pct + multi_pct, 2)
 
 
+def parse_refstats(path: Path) -> dict:
+    """Return {ref_name: matched_pct} from a BBSplit refstats.txt.
+
+    matched_pct = %unambiguousReads + %ambiguousReads, i.e. BBSplit's own
+    reported % of input reads assigned to that reference — used as-is, no
+    re-derivation. ref_name is BBSplit's own '#name' column, unmodified.
+    """
+    matched = {}
+    try:
+        df = pd.read_csv(path, sep="\t")
+        df.columns = [c.lstrip("#") for c in df.columns]
+        for _, row in df.iterrows():
+            ref = str(row["name"])
+            matched[ref] = float(row["%unambiguousReads"]) + float(row["%ambiguousReads"])
+    except Exception as e:
+        print(f"Warning refstats {path}: {e}", file=sys.stderr)
+    return matched
+
+
 def weighted_total(path: Path) -> int:
     total = 0
     try:
@@ -143,6 +163,8 @@ def main():
     final_trans     = defaultdict(int)
     all_samples     = set()
     virus_rows      = []
+    refstats_data   = {}   # {sample: {ref_name: matched_pct}}
+    all_refs        = set()
 
     # ── seqkit stats (all counts use both-mate totals for consistency) ────────
     for fname in sorted(glob.glob("*.tsv")):
@@ -163,6 +185,16 @@ def main():
             sample = m.group(1)
             all_samples.add(sample)
             star_mapped_pct[sample] = parse_star_log(Path(fname))
+
+    # ── BBSplit refstats → per-reference matched % ────────────────────────────
+    for fname in sorted(glob.glob("*_bbsplit_refstats.txt")):
+        m = REFSTATS_RE.match(fname)
+        if m:
+            sample = m.group(1)
+            all_samples.add(sample)
+            refs = parse_refstats(Path(fname))
+            refstats_data[sample] = refs
+            all_refs.update(refs.keys())
 
     # ── collapse stats ────────────────────────────────────────────────────────
     for fname in sorted(glob.glob("*_collapse_stats.tsv")):
@@ -220,6 +252,7 @@ def main():
             final_trans[sample] += weighted_total(Path(fname))
 
     # ── Build main report ─────────────────────────────────────────────────────
+    sorted_refs = sorted(all_refs)
     rows = []
     for sample in sorted(all_samples):
         sd       = seqkit_data.get(sample, {})
@@ -227,8 +260,6 @@ def main():
         trimmed  = sd.get("trimmed",       0)  # both mates total
         t_both   = trimmed_both.get(sample, trimmed)
         unmapped = sd.get("star_unmapped", 0)
-        host     = sd.get("host",  0)
-        virus    = sd.get("virus", 0)
         mags     = sd.get("mags",  0)
         krak     = kraken_counts.get(sample, 0)
         blast    = blast_unique.get(sample,  0)
@@ -236,17 +267,23 @@ def main():
         c_ge5      = collapse_ge5.get(sample,   0)
         mreads     = merged_reads.get(sample,   0)
         reinflated = final_trans.get(sample,    0)
+        refs       = refstats_data.get(sample, {})
 
-        rows.append({
+        row = {
             "Sample":                                        sample,
             "Group":                                         infer_group(sample, sample_to_group),
             "Raw reads":                                     raw,
             "Trimmed":                                       trimmed,
             "STAR mapped %":                                 star_mapped_pct.get(sample, 0.0),
             "STAR unmapped":                                 unmapped,
-            "Decon-a: Host+Human matched %":                 pct(unmapped - host, unmapped),
-            "Decon-b: 12 viral matched %":                   pct(host - virus, host),
-            "MAGs matched %":                                pct(virus - mags, virus),
+        }
+        for ref in sorted_refs:
+            row[f"BBSplit: {ref} matched %"] = refs.get(ref, 0.0)
+        row.update({
+            # Denominator is STAR-unmapped (not a "virus survivors" count, which
+            # no longer exists now that host/virus stats come from BBSplit's own
+            # refstats above) -- % of the STAR-unmapped pool removed as MAGs.
+            "MAGs matched %":                                pct(unmapped - mags, unmapped),
             # All three variables are in individual-read units:
             # mags  : seqkit stats on *_noMAGs_stats.tsv (both mates summed)
             # krak  : *_kraken_filter_stats.tsv → 'classified' × 2  (pairs converted to reads at ingestion)
@@ -262,6 +299,7 @@ def main():
             "Transmissible RNA representative sequences (RPM)":  rpm(reinflated, t_both),
             "% of transRNAs with >=5 duplicates":               pct(reinflated, mreads),
         })
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     df.drop(columns=["Group"]).to_csv(args.output, sep="\t", index=False)
@@ -274,13 +312,16 @@ def main():
         if sub.empty:
             continue
         trimmed_tot = sub["Trimmed"].sum()
-        summary_rows.append({
+        summary_row = {
             "Dataset":                                       grp,
             "n_samples":                                     len(sub),
             "Trimmed (both mates total)":                     int(trimmed_tot),
             "Avg STAR mapped %":                             round(sub["STAR mapped %"].mean(), 2),
-            "Avg Decon-a matched %":                         round(sub["Decon-a: Host+Human matched %"].mean(), 2),
-            "Avg Decon-b matched %":                         round(sub["Decon-b: 12 viral matched %"].mean(), 2),
+        }
+        for ref in sorted_refs:
+            col = f"BBSplit: {ref} matched %"
+            summary_row[f"Avg {col}"] = round(sub[col].mean(), 2)
+        summary_row.update({
             "Avg MAGs matched %":                            round(sub["MAGs matched %"].mean(), 2),
             "Avg Kraken classified %":                       round(sub["Kraken classified %"].mean(), 2),
             "Avg BLAST classified %":                        round(sub["BLAST classified %"].mean(), 2),
@@ -291,6 +332,7 @@ def main():
             "Avg Transmissible RNA representative seqs (RPM)":   round(sub["Transmissible RNA representative sequences (RPM)"].mean(), 2),
             "Avg % of transRNAs with >=5 duplicates":            round(sub["% of transRNAs with >=5 duplicates"].mean(), 2),
         })
+        summary_rows.append(summary_row)
     pd.DataFrame(summary_rows).to_csv(args.summary_output, sep="\t", index=False)
     print(f"Summary: {args.summary_output}", file=sys.stderr)
 

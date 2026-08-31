@@ -203,10 +203,11 @@ process COUNT_STAR_UNMAPPED {
 //  defaults, with project-specific tuning passed through bbsplit_extra_args
 //  (see config/params/alvi_rnaome.yml).
 //
-//  NOTE: COUNT_BBSPLIT_HOST/VIRUS/MAGS below still read from the separate
-//  externally-computed params.bbsplit_*_dir directories -- not yet wired to
-//  this process's own output. That rewiring is a deliberate follow-up step,
-//  not done here.
+//  Per-reference match % for the report comes straight from BBSPLIT's own
+//  refstats.txt (see AGGREGATE_REPORT) -- no separate COUNT_* process needed.
+//  COUNT_BBSPLIT_MAGS below still reads from the separate externally-computed
+//  params.bbsplit_mags_dir directory -- not yet wired to this process's own
+//  output. That rewiring is a deliberate follow-up step, not done here.
 // ============================================================================
 
 process BBSPLIT {
@@ -227,38 +228,6 @@ process BBSPLIT {
         outu1=${meta.id}_bbsplit_unmatched_1.fq outu2=${meta.id}_bbsplit_unmatched_2.fq \
         refstats=${meta.id}_bbsplit_refstats.txt \
         ${params.bbsplit_extra_args}
-    """
-}
-
-process COUNT_BBSPLIT_HOST {
-    tag "${meta.id}"
-    label 'count_only'
-    conda "${moduleDir}/config/envs/seqkit.yaml"
-    publishDir "${params.outdir}/reports/04a_bbsplit_host", mode: 'copy'
-    input:  val(meta)
-    output: tuple val(meta), path("${meta.id}_bbsplit_host_stats.tsv")
-    script:
-    """
-    seqkit stats -T -j ${task.cpus} \
-        ${params.bbsplit_host_dir}/Filtered_${meta.id}_2MM_bbsplit_clean1.fq \
-        ${params.bbsplit_host_dir}/Filtered_${meta.id}_2MM_bbsplit_clean2.fq \
-        > ${meta.id}_bbsplit_host_stats.tsv
-    """
-}
-
-process COUNT_BBSPLIT_VIRUS {
-    tag "${meta.id}"
-    label 'count_only'
-    conda "${moduleDir}/config/envs/seqkit.yaml"
-    publishDir "${params.outdir}/reports/04b_bbsplit_virus", mode: 'copy'
-    input:  val(meta)
-    output: tuple val(meta), path("${meta.id}_bbsplit_virus_stats.tsv")
-    script:
-    """
-    seqkit stats -T -j ${task.cpus} \
-        ${params.bbsplit_virus_dir}/Clean_${meta.id}_2MM_bbsplit_1.fq \
-        ${params.bbsplit_virus_dir}/Clean_${meta.id}_2MM_bbsplit_2.fq \
-        > ${meta.id}_bbsplit_virus_stats.tsv
     """
 }
 
@@ -682,8 +651,7 @@ process AGGREGATE_REPORT {
     path(trimmed_stats)
     path(star_stats)
     path(star_logs)              // Log.final.out files for STAR mapped %
-    path(host_stats)
-    path(virus_stats)
+    path(bbsplit_refstats)       // raw BBSPLIT refstats.txt, one per sample
     path(nomags_stats)
     path(collapse_stats)
     path(all_filter_stats_ch)   // filter stats: contains classified counts pre-filter
@@ -792,7 +760,8 @@ workflow {
     if (!params.skip_bbsplit) {
         bbsplit_in_ch = star_out_ch.map { meta, reads, log -> tuple(meta, reads) }
         BBSPLIT(bbsplit_in_ch)
-        bbsplit_out_ch = BBSPLIT.out.unmatched
+        bbsplit_out_ch      = BBSPLIT.out.unmatched
+        bbsplit_refstats_ch = BBSPLIT.out.refstats.map { it[1] }.collect()
     } else {
         bbsplit_out_ch = samples_ch.map { meta ->
             tuple(meta,
@@ -800,6 +769,9 @@ workflow {
                 file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_unmatched_2.fq", checkIfExists: true)
             )
         }
+        bbsplit_refstats_ch = samples_ch.map { meta ->
+            file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_refstats.txt", checkIfExists: true)
+        }.collect()
     }
 
     // ── Read count reports at every pre-computed step ─────────────────────────
@@ -810,8 +782,6 @@ workflow {
         raw_ch     = COUNT_RAW(samples_full_ch)
         trimmed_ch = COUNT_TRIMMED(trimmed_reads_ch)
         star_ch    = COUNT_STAR_UNMAPPED(star_out_ch)
-        host_ch    = COUNT_BBSPLIT_HOST(samples_ch)
-        virus_ch   = COUNT_BBSPLIT_VIRUS(samples_ch)
         nomags_ch  = COUNT_BBSPLIT_MAGS(samples_ch)
 
         reads_table_ch = MAKE_READS_POSTTRIM_TAB(
@@ -977,8 +947,7 @@ workflow {
             trimmed_ch.map { it[1] }.collect(),
             star_ch   .map { it[1] }.collect(),
             star_ch   .map { it[2] }.collect(),
-            host_ch   .map { it[1] }.collect(),
-            virus_ch  .map { it[1] }.collect(),
+            bbsplit_refstats_ch,
             nomags_ch .map { it[1] }.collect(),
             collapse_ch.map { it[4] }.collect(),
             all_filter_stats_ch,
