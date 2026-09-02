@@ -369,6 +369,69 @@ process COLLAPSE_READS_POST_TAXONOMY {
 }
 
 // ============================================================================
+//  KRAKEN2  —  real process, only runs under collapse_mode=pre_taxonomy
+//              and skip_kraken=false (see the workflow block).
+//
+//  Query is EXTRACT_FASTA's candidate FASTA — the whole point of the
+//  pre_taxonomy dedup order is running the expensive classification tools
+//  on the smallest possible (deduplicated, ≥min_occ) set, not on every raw
+//  read. Structural flags only (--db, --output); tuning via
+//  kraken2_extra_args (see config/params/alvi_rnaome.yml for the pattern).
+// ============================================================================
+
+process KRAKEN2 {
+    tag "${meta.id}"
+    label 'high'
+    conda "${moduleDir}/config/envs/kraken2.yaml"
+    publishDir "${params.outdir}/kraken_raw", mode: 'copy'
+    input:  tuple val(meta), path(candidate_fasta)
+    output: tuple val(meta), path("${meta.id}_kraken_output.txt")
+    script:
+    """
+    kraken2 --db ${params.kraken2_db} \
+        --output ${meta.id}_kraken_output.txt \
+        --threads ${task.cpus} \
+        ${params.kraken2_extra_args} \
+        ${candidate_fasta}
+    """
+}
+
+// ============================================================================
+//  BLASTN  —  real process, only runs under collapse_mode=pre_taxonomy and
+//             skip_blast=false (see the workflow block).
+//
+//  Query is FILTER_KRAKEN's unclassified-ID subset of the candidate FASTA
+//  (seqkit grep'd out as this process's own first step) — the real
+//  "U rows -> BLAST" handoff, wired for real instead of an unenforced
+//  assumption about an external run. 14-column outfmt (no qlen/slen)
+//  matches the historical convention ANNOTATE_BLAST's --taxid-col 13
+//  already assumes.
+// ============================================================================
+
+process BLASTN {
+    tag "${meta.id}"
+    label 'high'
+    conda "${moduleDir}/config/envs/blast.yaml"
+    publishDir "${params.outdir}/blast_raw", mode: 'copy'
+    input:
+    tuple val(meta), path(candidate_fasta), path(unclassified_ids)
+    output: tuple val(meta), path("${meta.id}_blast_top_hits.tsv")
+    script:
+    """
+    seqkit grep -j ${task.cpus} -f ${unclassified_ids} \
+        ${candidate_fasta} > ${meta.id}_unclassified.fasta
+
+    blastn -query ${meta.id}_unclassified.fasta \
+        -db ${params.blast_nt_db} \
+        -task blastn-short \
+        -out ${meta.id}_blast_top_hits.tsv \
+        -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids sscinames" \
+        -num_threads ${task.cpus} \
+        ${params.blastn_extra_args}
+    """
+}
+
+// ============================================================================
 //  KRAKEN ANNOTATION + FILTERING
 //
 //  annotate_kraken_lineage.py:
@@ -378,7 +441,10 @@ process COLLAPSE_READS_POST_TAXONOMY {
 //
 //  filter_kraken_invertebrates.py:
 //    • KEEPS only C (classified) rows
-//    • U rows silently skipped — they are NOT lost; handled by BLAST path
+//    • U rows silently skipped from the kept output — but now also written to
+//      a real unclassified-IDs output, which is BLASTN's actual query list
+//      under collapse_mode=pre_taxonomy (previously just an assumption about
+//      how an external BLAST run was set up)
 //    • Removes: viruses (Domain), invertebrates (Phylum), host genera
 //    • Removes: either mate length < min_len nt
 // ============================================================================
@@ -388,12 +454,16 @@ process ANNOTATE_KRAKEN {
     label 'med'
     conda "${moduleDir}/config/envs/taxonkit.yaml"
     //publishDir "${params.outdir}/kraken_annotated", mode: 'copy'
-    input:  val(meta)
+    // Source-agnostic: kraken_raw is either a real KRAKEN2 process output
+    // (collapse_mode=pre_taxonomy, skip_kraken=false) or a file() lookup
+    // into params.kraken_dir (post_taxonomy, or pre_taxonomy+skip_kraken) —
+    // see the workflow block for which.
+    input:  tuple val(meta), path(kraken_raw)
     output: tuple val(meta), path("${meta.id}_kraken_annotated.tsv")
     script:
     """
     python3 ${moduleDir}/bin/annotate_kraken_lineage.py \
-        --input       ${params.kraken_dir}/${meta.id}_2MM_CLEAN_noMAGs_kraken_output_005_.txt \
+        --input       ${kraken_raw} \
         --output      ${meta.id}_kraken_annotated.tsv \
     """
 }
@@ -408,12 +478,16 @@ process FILTER_KRAKEN {
     output:
     tuple val(meta),
           path("${meta.id}_kraken_invertebrates_filtered.tsv"),
-          path("${meta.id}_kraken_filter_stats.tsv")             // ← new
+          path("${meta.id}_kraken_filter_stats.tsv"),
+          path("${meta.id}_kraken_unclassified_ids.txt")        // ← new: real
+          // BLAST query list under collapse_mode=pre_taxonomy (unused, but
+          // still produced, under post_taxonomy — harmless small file).
     script:
     """
     python3 ${moduleDir}/bin/filter_kraken_invertebrates.py \
-        --min-len   ${params.min_len} \
-        --stats-out ${meta.id}_kraken_filter_stats.tsv \
+        --min-len          ${params.min_len} \
+        --stats-out        ${meta.id}_kraken_filter_stats.tsv \
+        --unclassified-out ${meta.id}_kraken_unclassified_ids.txt \
         ${params.invertebrate_phyla} \
         ${annotated_tsv} \
         ${meta.id}_kraken_invertebrates_filtered.tsv
@@ -437,12 +511,16 @@ process ANNOTATE_BLAST {
     label 'med'
     conda "${moduleDir}/config/envs/taxonkit.yaml"
     //publishDir "${params.outdir}/blast_annotated", mode: 'copy'
-    input:  tuple val(meta), val(mate)
+    // Source-agnostic, same pattern as ANNOTATE_KRAKEN: blast_raw is either a
+    // real BLASTN process output (pre_taxonomy, skip_blast=false — "mate" is
+    // just "candidates" there, no real mate split) or a file() lookup into
+    // params.blast_dir (post_taxonomy, or pre_taxonomy+skip_blast).
+    input:  tuple val(meta), val(mate), path(blast_raw)
     output: tuple val(meta), val(mate), path("${meta.id}_${mate}_blast_annotated.tsv")
     script:
     """
     python3 ${moduleDir}/bin/annotate_blast_lineage.py \
-        --input       ${params.blast_dir}/${meta.id}_${mate}.tsv \
+        --input       ${blast_raw} \
         --output      ${meta.id}_${mate}_blast_annotated.tsv \
         --taxid-col   13
     """
@@ -828,30 +906,45 @@ workflow {
         )
     }
 
-    // ── Kraken annotation + filtering ─────────────────────────────────────────
-    kraken_ann_ch          = ANNOTATE_KRAKEN(samples_ch)
-    kraken_filtered_raw_ch = FILTER_KRAKEN(kraken_ann_ch)
-    kraken_filtered_ch     = kraken_filtered_raw_ch.map { meta, tsv, stats -> tuple(meta, tsv) }
-    // raw shape: (meta, filtered_tsv, filter_stats)
-    // downstream shape: (meta, filtered_tsv)
+    // ── Kraken + BLAST, post_taxonomy mode only ───────────────────────────────
+    // Legacy datasets (collapse_mode=post_taxonomy) already have real
+    // Kraken2/BLAST results, computed long before this pipeline existed, on
+    // the full non-deduplicated pool — read from params.kraken_dir/blast_dir
+    // unconditionally here, same as always. COLLAPSE_READS_POST_TAXONOMY
+    // (below) needs kraken_filtered_ch/blast1_ch/blast2_ch as real inputs, so
+    // this has to happen before collapse in this mode — structurally the
+    // opposite of pre_taxonomy mode, where KRAKEN2/BLASTN run for real, but
+    // only after EXTRACT_FASTA produces something to classify (see the
+    // matching block right after EXTRACT_FASTA, below).
+    if (params.collapse_mode == "post_taxonomy") {
+        kraken_raw_ch = samples_ch.map { meta ->
+            tuple(meta, file("${params.kraken_dir}/${meta.id}_2MM_CLEAN_noMAGs_kraken_output_005_.txt", checkIfExists: true))
+        }
+        kraken_ann_ch          = ANNOTATE_KRAKEN(kraken_raw_ch)
+        kraken_filtered_raw_ch = FILTER_KRAKEN(kraken_ann_ch)
+        kraken_filtered_ch     = kraken_filtered_raw_ch.map { meta, tsv, stats, unclassified -> tuple(meta, tsv) }
+        // raw shape: (meta, filtered_tsv, filter_stats, unclassified_ids)
+        // downstream shape: (meta, filtered_tsv)
 
-    // ── BLAST annotation + filtering (mate 1 and 2 in parallel) ──────────────
-    blast_mates_ch = samples_ch.flatMap { meta ->
-        [ tuple(meta, "1"), tuple(meta, "2") ]
+        blast_mates_ch = samples_ch.flatMap { meta ->
+            [ tuple(meta, "1"), tuple(meta, "2") ]
+        }.map { meta, mate ->
+            tuple(meta, mate, file("${params.blast_dir}/${meta.id}_${mate}.tsv", checkIfExists: true))
+        }
+        blast_ann_ch      = ANNOTATE_BLAST(blast_mates_ch)
+        blast_filtered_ch = FILTER_BLAST(blast_ann_ch)
+
+        blast1_ch = blast_filtered_ch.filter { it[1] == "1" }
+                        .map { meta, mate, tsv, stats -> tuple(meta, tsv) }
+        blast2_ch = blast_filtered_ch.filter { it[1] == "2" }
+                        .map { meta, mate, tsv, stats -> tuple(meta, tsv) }
+
+        // Also collect all filter stats for AGGREGATE_REPORT (virus report).
+        all_filter_stats_ch = kraken_filtered_raw_ch
+            .map { meta, tsv, stats, unclassified -> stats }
+            .mix(blast_filtered_ch.map { meta, mate, tsv, stats -> stats })
+            .collect()
     }
-    blast_ann_ch      = ANNOTATE_BLAST(blast_mates_ch)
-    blast_filtered_ch = FILTER_BLAST(blast_ann_ch)
-
-    blast1_ch = blast_filtered_ch.filter { it[1] == "1" }
-                    .map { meta, mate, tsv, stats -> tuple(meta, tsv) }
-    blast2_ch = blast_filtered_ch.filter { it[1] == "2" }
-                    .map { meta, mate, tsv, stats -> tuple(meta, tsv) }
-
-    // Also collect all filter stats for AGGREGATE_REPORT (virus report).
-    all_filter_stats_ch = kraken_filtered_raw_ch
-        .map { meta, tsv, stats -> stats }
-        .mix(blast_filtered_ch.map { meta, mate, tsv, stats -> stats })
-        .collect()
 
     // ── Collapse (dedup) ───────────────────────────────────────────────────────
     // Skippable via params.skip_collapse — loads pre-existing outputs from
@@ -902,8 +995,59 @@ workflow {
         .map { meta, ids, hist, wids, collapsed_clean_fq ->
             tuple(meta, ids, hist, wids, collapsed_clean_fq) }
 
+    // fasta_ch: (meta, candidate_fasta) — only actually needed downstream
+    // under collapse_mode=pre_taxonomy (KRAKEN2's query, below); still built
+    // either way since EXTRACT_FASTA's own skip-fallback needs the same shape.
     if (!params.skip_extract_fasta) {
-        EXTRACT_FASTA(extract_input_ch)
+        fasta_ch = EXTRACT_FASTA(extract_input_ch).map { meta, fasta, report -> tuple(meta, fasta) }
+    } else {
+        fasta_ch = samples_ch.map { meta ->
+            tuple(meta, file("${params.outdir}/final_transRNAs_fasta_collapsed/${meta.id}_final_transRNAs.fasta", checkIfExists: true))
+        }
+    }
+
+    // ── Kraken + BLAST, pre_taxonomy mode only ────────────────────────────────
+    // Mirrors the post_taxonomy block far above, but the query is
+    // EXTRACT_FASTA's candidate set instead of the pre-computed external
+    // dirs — the actual point of the pre_taxonomy dedup order: classify the
+    // smallest possible (deduplicated, >=min_occ) set once, not every raw
+    // read. skip_kraken/skip_blast are independent — each still falls back
+    // to a pre-computed directory if set, same fallback shape as every other
+    // skip_* flag in this pipeline.
+    if (params.collapse_mode == "pre_taxonomy") {
+        if (!params.skip_kraken) {
+            kraken_raw_ch = KRAKEN2(fasta_ch)
+        } else {
+            kraken_raw_ch = samples_ch.map { meta ->
+                tuple(meta, file("${params.kraken_dir}/${meta.id}_2MM_CLEAN_noMAGs_kraken_output_005_.txt", checkIfExists: true))
+            }
+        }
+        kraken_ann_ch          = ANNOTATE_KRAKEN(kraken_raw_ch)
+        kraken_filtered_raw_ch = FILTER_KRAKEN(kraken_ann_ch)
+        kraken_filtered_ch     = kraken_filtered_raw_ch.map { meta, tsv, stats, unclassified -> tuple(meta, tsv) }
+        kraken_unclassified_ch = kraken_filtered_raw_ch.map { meta, tsv, stats, unclassified -> tuple(meta, unclassified) }
+
+        if (!params.skip_blast) {
+            // BLASTN's own query = the unclassified subset of fasta_ch,
+            // extracted inside the process itself (see BLASTN's script).
+            blastn_in_ch = fasta_ch.join(kraken_unclassified_ch, by: 0)
+            blast_raw_ch = BLASTN(blastn_in_ch).map { meta, tsv -> tuple(meta, "candidates", tsv) }
+        } else {
+            blast_raw_ch = samples_ch.map { meta ->
+                tuple(meta, "candidates", file("${params.blast_dir}/${meta.id}_candidates.tsv", checkIfExists: true))
+            }
+        }
+        blast_ann_ch      = ANNOTATE_BLAST(blast_raw_ch)
+        blast_filtered_ch = FILTER_BLAST(blast_ann_ch)
+        // No real mate-1/mate-2 split under pre_taxonomy — "candidates" is a
+        // single pool tag, not a real mate. blast1_ch/blast2_ch aren't
+        // needed here: they only ever feed COLLAPSE_READS_POST_TAXONOMY,
+        // which doesn't run in this mode.
+
+        all_filter_stats_ch = kraken_filtered_raw_ch
+            .map { meta, tsv, stats, unclassified -> stats }
+            .mix(blast_filtered_ch.map { meta, mate, tsv, stats -> stats })
+            .collect()
     }
 
     // ── Length histograms + dataset plot ─────────────────────────────────────
