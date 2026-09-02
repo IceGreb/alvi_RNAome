@@ -1,0 +1,6 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - blast
+  - seqkit   # BLASTN's own unclassified-subset extraction step
