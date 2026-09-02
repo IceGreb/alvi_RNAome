@@ -77,6 +77,14 @@ def main():
     ap.add_argument("--min-len", type=int, default=18)
     ap.add_argument("--stats-out", default=None,
                     help="Optional path to write per-category exclusion counts TSV")
+    ap.add_argument("--unclassified-out", default=None,
+                    help="Optional path to write U-row read IDs, one per line — "
+                         "the real BLAST query list under collapse_mode=pre_taxonomy "
+                         "(vs. the pre-computed params.blast_dir fallback otherwise). "
+                         "Previously U rows were just counted and dropped; this makes "
+                         "the 'U rows -> BLAST path' handoff a real, wired output "
+                         "instead of an unenforced assumption about how an external "
+                         "BLAST run was set up.")
     args = ap.parse_args()
 
     excluded = load_excluded_phyla(args.exclude_file)
@@ -86,39 +94,47 @@ def main():
     total = classified = kept = 0
     rm_u = rm_short = rm_virus = rm_host = rm_inv = bad = 0
 
-    with open(args.input_tsv) as fin, open(args.output_tsv, "w") as fout:
-        for line in fin:
-            total += 1
-            raw = line.rstrip("\n")
-            fields = raw.split("\t")
-            if len(fields) < 6: bad += 1; continue
+    funclass = open(args.unclassified_out, "w") if args.unclassified_out else None
+    try:
+        with open(args.input_tsv) as fin, open(args.output_tsv, "w") as fout:
+            for line in fin:
+                total += 1
+                raw = line.rstrip("\n")
+                fields = raw.split("\t")
+                if len(fields) < 6: bad += 1; continue
 
-            status       = fields[0].strip()
-            length_field = fields[3].strip()
-            lineage_col  = fields[5].strip()
+                status       = fields[0].strip()
+                read_id      = fields[1].strip()
+                length_field = fields[3].strip()
+                lineage_col  = fields[5].strip()
 
-            # U rows → BLAST path, not lost
-            if status != "C": rm_u += 1; continue
-            classified += 1
+                # U rows → BLAST path, not lost
+                if status != "C":
+                    rm_u += 1
+                    if funclass: funclass.write(read_id + "\n")
+                    continue
+                classified += 1
 
-            if not both_mates_ok(length_field, args.min_len): rm_short += 1; continue
+                if not both_mates_ok(length_field, args.min_len): rm_short += 1; continue
 
-            parts = [x.strip() for x in lineage_col.split(";")]
-            while len(parts) < 8: parts.append("unassigned")
-            domain = parts[0].lower()
-            genus  = parts[6].lower()
+                parts = [x.strip() for x in lineage_col.split(";")]
+                while len(parts) < 8: parts.append("unassigned")
+                domain = parts[0].lower()
+                genus  = parts[6].lower()
 
-            # Invertebrate check before host-genus: Apis is itself an
-            # invertebrate (Arthropoda), so it's always caught here first —
-            # HOST_GENERA below no longer needs "apis" listed at all, and
-            # true off-target host contamination (Homo/Mus/Canis/Felis)
-            # still gets its own accurate rm_host count.
-            if domain in VIRUS_DOMAINS:     rm_virus += 1; continue
-            if pattern.search(lineage_col): rm_inv   += 1; continue
-            if genus in HOST_GENERA:        rm_host  += 1; continue
+                # Invertebrate check before host-genus: Apis is itself an
+                # invertebrate (Arthropoda), so it's always caught here first —
+                # HOST_GENERA below no longer needs "apis" listed at all, and
+                # true off-target host contamination (Homo/Mus/Canis/Felis)
+                # still gets its own accurate rm_host count.
+                if domain in VIRUS_DOMAINS:     rm_virus += 1; continue
+                if pattern.search(lineage_col): rm_inv   += 1; continue
+                if genus in HOST_GENERA:        rm_host  += 1; continue
 
-            fout.write(raw + "\n")
-            kept += 1
+                fout.write(raw + "\n")
+                kept += 1
+    finally:
+        if funclass: funclass.close()
 
     summary = (
         f"{Path(args.input_tsv).name}: total={total} "
