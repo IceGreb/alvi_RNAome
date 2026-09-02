@@ -30,7 +30,9 @@ COMMON_NAMES = {
     "spiders","crabs","etc","starfish","urchins","arrow worms",
     "acorn worms","vertebrates","invertebrates",
 }
-HOST_GENERA   = {"homo","mus","canis","felis","apis"}
+HOST_GENERA   = {"homo","mus","canis","felis"}  # apis dropped: always caught
+                                                  # by the invertebrate check
+                                                  # first (see main(), below)
 VIRUS_DOMAINS = {"viruses","virus","acellular root","acellular organisms"}
 
 def log(msg): print(msg, file=sys.stderr, flush=True)
@@ -106,9 +108,14 @@ def main():
             domain = parts[0].lower()
             genus  = parts[6].lower()
 
+            # Invertebrate check before host-genus: Apis is itself an
+            # invertebrate (Arthropoda), so it's always caught here first —
+            # HOST_GENERA below no longer needs "apis" listed at all, and
+            # true off-target host contamination (Homo/Mus/Canis/Felis)
+            # still gets its own accurate rm_host count.
             if domain in VIRUS_DOMAINS:     rm_virus += 1; continue
-            if genus in HOST_GENERA:        rm_host  += 1; continue
             if pattern.search(lineage_col): rm_inv   += 1; continue
+            if genus in HOST_GENERA:        rm_host  += 1; continue
 
             fout.write(raw + "\n")
             kept += 1
