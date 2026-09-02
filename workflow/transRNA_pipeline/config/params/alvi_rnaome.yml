@@ -12,8 +12,10 @@
 #  Nextflow only allows one -params-file per run, and it always overrides
 #  params.config's params {} block regardless of command-line order, so this
 #  file only needs to list what's actually different — the pipeline itself
-#  stays generic and reusable, and this file documents the exact paths and
-#  tool parameters actually used for the published analysis.
+#  stays generic and reusable, and this file documents the tool parameters
+#  actually used for the published analysis. Paths below are placeholders —
+#  fill in your own local locations before running; real absolute paths
+#  aren't checked into this (public) repo.
 #
 # =============================================================================
 
@@ -28,52 +30,49 @@ sample_sheet: "<path/to/your/real/samples.csv>"
 # Apis mellifera (honeybee host genome) — RefSeq assembly GCF_003254395.2,
 # Amel_HAv3.1. STAR index confirmed already built (SA, SAindex, sjdb* etc.
 # present) at:
-star_genome_dir: "/home/nv358/rds/hpc-work/transmissible_RNA/refs/ncbi_dataset/data/GCF_003254395.2"
+star_genome_dir: "<path/to/STAR/genome/index>/GCF_003254395.2"
 # GTF the index above was built from:
-star_gtf: "/home/nv358/rds/hpc-work/transmissible_RNA/refs/ncbi_dataset/data/GCF_003254395.2/genomic.gtf"
+star_gtf: "<path/to/genome/annotation>/GCF_003254395.2/genomic.gtf"
 # Same assembly, plain genome FASTA — a separate copy used as a bbsplit
 # reference (not the STAR index itself):
-apis_mellifera_genome_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/apis_mellifera_genome/data/GCF_003254395.2/GCF_003254395.2_Amel_HAv3.1_genomic.fna"
+apis_mellifera_genome_fasta: "<path/to/ref_genomes>/apis_mellifera_genome/data/GCF_003254395.2/GCF_003254395.2_Amel_HAv3.1_genomic.fna"
 
 # Human genome — Ensembl GRCh38 primary assembly (host/contaminant
 # decontamination reference):
-human_genome_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+human_genome_fasta: "<path/to/ref_genomes>/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
 
 # Varroa destructor (honeybee parasitic mite) — found used alongside human
 # and viral references in the real bbsplit host-decontamination step
 # (scripts/slurm/bbsplit_NEW.sh). Not previously in params.config — flagging in
 # case the pipeline's own decontamination step should include it too:
-varroa_genome_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/varroa_davide/old/varroa_destructor_genome/data/GCF_002443255.2/GCF_002443255.2_Vdes_3.0_genomic.fna"
+varroa_genome_fasta: "<path/to/ref_genomes>/varroa_destructor_genome/data/GCF_002443255.2/GCF_002443255.2_Vdes_3.0_genomic.fna"
 
 # 12 honeybee viral genomes (BBsplit antiviral decontamination — "Decon-b" in
 # the aggregate report). Combined fasta (confirmed exists) + the directory of
 # individual per-virus files it's built from (ABPV, BMLV, BQCV-IT1, CBPV,
 # DWV, IAPV, KBV, LSV [1-4 + all], SBPV, SBV, VDV-1):
-viral_genomes_fasta: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/honeybee_viruses/all_viral_genomes.fna"
-viral_genomes_dir:   "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/honeybee_viruses"
+viral_genomes_fasta: "<path/to/ref_genomes>/honeybee_viruses/all_viral_genomes.fna"
+viral_genomes_dir:   "<path/to/ref_genomes>/honeybee_viruses"
 
 # Invertebrate phyla exclusion list (filter_kraken_invertebrates.py /
 # filter_blast_all_conditions.py). Multiple copies found on disk; using the
 # one under out/blast/RISC/ — worth confirming this is the canonical one:
-invertebrate_phyla: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/out/blast/RISC/invertebrate_phyla.txt"
+invertebrate_phyla: "<path/to>/invertebrate_phyla.txt"
 
 # Kraken2 database — for when Kraken2 itself becomes a real pipeline step
 # (currently params.config's kraken_dir is pre-computed Kraken2 *output*, not
-# this). UNRESOLVED: multiple dated builds found, none obviously "the" one
-# used for the RJ/ST manuscript run:
-#   .../in/ref_genomes/kraken_db/11_01_2026/
-#   .../in/ref_genomes/kraken_db/14_10_2025_PlusPFP/
-#   .../in/ref_genomes/kraken_db/31_12_2025/
-#   .../in/ref_genomes/kraken_db/core_nt/
-kraken2_db: "<unresolved — see candidates above, needs your confirmation>"
+# this). Several dated builds exist on disk (11_01_2026, 14_10_2025_PlusPFP,
+# 31_12_2025, core_nt) — core_nt is the one confirmed used for the RJ/ST
+# manuscript run:
+kraken2_db: "<path/to/kraken_db>/core_nt"
 
 # BLAST database — NCBI core_nt (confirmed present). For when BLAST itself
 # becomes a real pipeline step (currently params.config's blast_dir is
 # pre-computed BLAST *output*, not this):
-blast_nt_db: "/home/nv358/rds/rds-apis-mellifera-7BbYnVDdZgw/transmissible_RNAome/in/ref_genomes/blast_core_nt/core_nt"
+blast_nt_db: "<path/to/blast_core_nt>/core_nt"
 
 # taxonkit NCBI taxonomy database (confirmed populated):
-taxonkit_db: "/home/nv358/.taxonkit"
+taxonkit_db: "<path/to/.taxonkit>"
 
 # ── TrimGalore — actual project run (pipeline itself uses tool defaults) ─────
 # Verified 2026-08-26 against the trimming_report.txt in
@@ -131,6 +130,14 @@ star_extra_args: >-
 # test) -- varroa_genome_fasta deliberately left out here since that
 # combination hasn't been run/validated together yet.
 bbsplit_extra_args: "minid=0.93 k=15 maxindel=200k ambig2=split"
+
+# ── KRAKEN2 / BLASTN — not applicable to this project ───────────────────────
+# The real KRAKEN2/BLASTN search processes (and kraken2_db/blast_nt_db,
+# kraken2_extra_args/blastn_extra_args) only matter under
+# collapse_mode=pre_taxonomy (see below) -- this project uses
+# "post_taxonomy", where ANNOTATE_KRAKEN/ANNOTATE_BLAST only run taxonkit
+# lineage resolution on already-existing Kraken/BLAST output (taxonkit_db,
+# above), never the search tools themselves. Left unset here deliberately.
 
 # ── Collapse ordering — this dataset's own history, not a generic default ───
 # RJ/SLT's Kraken2 and BLAST were both run long before this Nextflow pipeline
