@@ -131,3 +131,14 @@ star_extra_args: >-
 # test) -- varroa_genome_fasta deliberately left out here since that
 # combination hasn't been run/validated together yet.
 bbsplit_extra_args: "minid=0.93 k=15 maxindel=200k ambig2=split"
+
+# ── Collapse ordering — this dataset's own history, not a generic default ───
+# RJ/SLT's Kraken2 and BLAST were both run long before this Nextflow pipeline
+# existed, directly on the full non-deduplicated read pool (no prior collapse
+# step). "post_taxonomy" reproduces that: dedup happens by extracting the IDs
+# that already passed Kraken/BLAST filtering and fetching those specific
+# reads back out of the trimmed pool -- COLLAPSE_READS_POST_TAXONOMY in
+# main.nf, kept unchanged from the original script. The pipeline's own
+# generic default (params.config) is "pre_taxonomy" -- correct for any
+# dataset run through this pipeline from scratch, just not this one.
+collapse_mode: "post_taxonomy"

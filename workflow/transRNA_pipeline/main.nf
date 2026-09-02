@@ -266,28 +266,58 @@ process MAKE_READS_POSTTRIM_TAB {
 }
 
 // ============================================================================
-//  COLLAPSE READS
-//  seqkit rmdup -s -D on the clean no_MAGs reads.
-//  -D writes duplicated.detail.txt directly in the exact format needed by
-//  the taxonomy parser and ge5 pipeline — no reformatting step required.
+//  COLLAPSE READS  —  two selectable variants, chosen by params.collapse_mode
+//
+//  Both produce the identical output shape (dup_detail, collapsed_clean_fq,
+//  merged_fq, collapse_stats), so everything downstream (SELECT_CANDIDATES
+//  onward) is unaffected by which one ran.
+//
+//  "pre_taxonomy"  (default, COLLAPSE_READS_PRE_TAXONOMY) — dedup runs right
+//    after BBSplit, before Kraken/BLAST ever see a read. The standard,
+//    efficient order for any dataset processed through this pipeline from
+//    here on: classify each unique sequence once, not once per duplicate.
+//
+//  "post_taxonomy" (COLLAPSE_READS_POST_TAXONOMY) — dedup runs AFTER
+//    Kraken/BLAST, by extracting the IDs that already passed annotation +
+//    filtering and fetching those specific reads back out of the trimmed
+//    pool. This is the pipeline's original logic, kept unchanged — needed
+//    for the SLT/RJ dataset specifically, whose Kraken/BLAST results were
+//    already generated (long before this pipeline existed) on the full,
+//    non-deduplicated read set. Set via config/params/alvi_rnaome.yml.
 // ============================================================================
 
-// =============================================================================
-//  COLLAPSE_READS
-//
-//  New logic (replacing no_MAGs-based collapse):
-//    1. Extract passing seq IDs from BLAST filtered TSVs (col 1, per mate)
-//    2. Extract passing seq IDs from Kraken filtered TSV (col 2, mate 1 only)
-//    3. seqkit grep each ID set against the corresponding trimmed FASTQ
-//    4. cat blast_mate1 + blast_mate2 + kraken_mate1 → merged.fq
-//    5. seqkit rmdup -s -D on merged.fq
-//
-//  This means only BLAST/Kraken-validated reads enter the duplicate pool,
-//  so any sequence reaching ≥ min_occ duplicates is already a candidate.
-//  No further cross-referencing is needed in SELECT_CANDIDATES.
-// =============================================================================
+process COLLAPSE_READS_PRE_TAXONOMY {
+    tag "${meta.id}"
+    label 'med'
+    conda "${moduleDir}/config/envs/collapse.yaml"
+    publishDir "${params.outdir}/collapsed", mode: 'copy'
+    input:
+    tuple val(meta), path(bbsplit_unmatched_1), path(bbsplit_unmatched_2)
+    output:
+    tuple val(meta),
+          path("${meta.id}_merged_duplicated.detail.txt"),
+          path("${meta.id}_merged_collapsed_clean.fq"),
+          path("${meta.id}_merged.fq"),
+          path("${meta.id}_collapse_stats.tsv")
+    script:
+    """
+    # ── Merge both mates of BBSplit's clean/unmatched output ──────────────────
+    cat ${bbsplit_unmatched_1} ${bbsplit_unmatched_2} > ${meta.id}_merged.fq
 
-process COLLAPSE_READS {
+    seqkit rmdup -s \
+        -j ${task.cpus} \
+        -o ${meta.id}_merged_collapsed_clean.fq \
+        -d /dev/null \
+        -D ${meta.id}_merged_duplicated.detail.txt \
+        ${meta.id}_merged.fq
+
+    # ── Collapse summary ──────────────────────────────────────────────────────
+    MERGED_READS=\$(awk 'END{print NR/4}' ${meta.id}_merged.fq)
+    python3 ${moduleDir}/bin/collapse_stats.py ${meta.id} ${params.min_occ} \${MERGED_READS}
+    """
+}
+
+process COLLAPSE_READS_POST_TAXONOMY {
     tag "${meta.id}"
     label 'med'
     conda "${moduleDir}/config/envs/collapse.yaml"
@@ -442,10 +472,13 @@ process FILTER_BLAST {
 
 // ============================================================================
 //  CANDIDATE SELECTION
-//  Since COLLAPSE_READS now collapses only BLAST/Kraken-validated reads,
-//  any sequence reaching ≥ min_occ duplicates is already a candidate.
-//  The ge5 script no longer cross-references BLAST/Kraken TSVs — it simply
-//  applies the ≥ min_occ threshold and reads lengths from the collapsed FASTQ.
+//  Never cross-references BLAST/Kraken TSVs itself — just applies the
+//  ≥ min_occ duplicate-count threshold and reads lengths from the collapsed
+//  FASTQ. Why that's sufficient depends on collapse_mode (see the COLLAPSE
+//  READS comment block above): under "post_taxonomy", the collapsed pool is
+//  already BLAST/Kraken-validated, so ≥ min_occ duplicates alone makes a
+//  candidate; under "pre_taxonomy", candidates are selected before taxonomy
+//  even runs, and Kraken/BLAST classify only this already-deduplicated set.
 // ============================================================================
 
 process SELECT_CANDIDATES {
@@ -755,8 +788,8 @@ workflow {
     // Skippable via skip_bbsplit — falls back to pre-computed unmatched reads
     // already in params.bbsplit_dir, matching
     // {sample}/{sample}_bbsplit_unmatched_{1,2}.fq.
-    // Not yet consumed downstream (COLLAPSE_READS et al. still run on their
-    // existing inputs) -- this wiring is a deliberate follow-up step.
+    // Consumed downstream by COLLAPSE_READS_PRE_TAXONOMY (see the COLLAPSE
+    // READS comment block below) when params.collapse_mode == "pre_taxonomy".
     if (!params.skip_bbsplit) {
         bbsplit_in_ch = star_out_ch.map { meta, reads, log -> tuple(meta, reads) }
         BBSPLIT(bbsplit_in_ch)
@@ -820,17 +853,26 @@ workflow {
         .mix(blast_filtered_ch.map { meta, mate, tsv, stats -> stats })
         .collect()
 
-    // ── Collapse (fetch from trimmed reads, cat, seqkit rmdup) ────────────────
+    // ── Collapse (dedup) ───────────────────────────────────────────────────────
     // Skippable via params.skip_collapse — loads pre-existing outputs from
     // outdir/collapsed/ so that SELECT_CANDIDATES and downstream can still run.
     // Annotation + filtering above still runs when skip_collapse is true because
     // those outputs are needed by the taxonomy parser and aggregate report.
+    //
+    // Which collapse process actually runs is chosen by params.collapse_mode
+    // (see the COLLAPSE READS comment block above) — both branches converge
+    // to the same collapse_ch shape, so nothing past this point cares which
+    // one ran.
     if (!params.skip_collapse) {
-        collapse_input_ch = blast1_ch
-            .join(blast2_ch,          by: 0)
-            .join(kraken_filtered_ch, by: 0)
-            .join(trimmed_reads_ch,   by: 0)
-        collapse_ch = COLLAPSE_READS(collapse_input_ch)
+        if (params.collapse_mode == "pre_taxonomy") {
+            collapse_ch = COLLAPSE_READS_PRE_TAXONOMY(bbsplit_out_ch)
+        } else {
+            collapse_input_ch = blast1_ch
+                .join(blast2_ch,          by: 0)
+                .join(kraken_filtered_ch, by: 0)
+                .join(trimmed_reads_ch,   by: 0)
+            collapse_ch = COLLAPSE_READS_POST_TAXONOMY(collapse_input_ch)
+        }
     } else {
         collapse_ch = samples_ch.map { meta ->
             tuple(
