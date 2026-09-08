@@ -4,18 +4,22 @@ filter_blast_all_conditions.py
 ───────────────────────────────
 Filters an annotated BLAST TSV (output of annotate_blast_lineage.py).
 
-CANDIDATE-LEVEL filtering (not row-level): a query is kept only if EVERY
-one of its hit rows passes all criteria below. A single disqualifying row
-anywhere in the group excludes the whole candidate — no partial credit for
-"had one good hit among several bad ones."
+TOP-HIT-ONLY filtering (changed 04_09_2026, was candidate-level/all-rows
+before): a query is kept purely on the strength of its own top hit — the
+other hit rows in its group are never even inspected. A tied or lower-
+ranked bad hit no longer disqualifies a candidate whose best hit is clean.
+(Old behavior: kept only if EVERY hit row passed. Real-data check on
+02_09_2026's strict-filter run found 57.3% of the rows causing a
+disqualification were merely TIED in bitscore with a passing top hit, not
+an obviously worse alternative — motivating this change.)
 
-Also assigns exactly ONE hit per surviving candidate: BLAST's own
-outfmt-6 output is already sorted best-hit-first (bitscore non-increasing)
-within a query's block — verified against the real data (60.76M rows,
-zero violations) rather than assumed — so the first row of a group IS its
-top hit. No separate best-hit-selection step is needed.
+BLAST's own outfmt-6 output is already sorted best-hit-first (bitscore
+non-increasing) within a query's block — verified against the real data
+(60.76M rows, zero violations) rather than assumed — so the first row of a
+group IS its top hit, and every other row in the group can be skipped
+without even parsing it.
 
-Filtering criteria (ALL rows must pass):
+Filtering criteria (top hit only):
   1.  Domain not in: Viruses, Virus, Acellular root, Acellular organisms
   2.  Phylum not in: excluded set from invertebrate_phyla.txt
   3.  Species contains no host fragment:
@@ -25,12 +29,12 @@ Filtering criteria (ALL rows must pass):
   6.  abs(qend - qstart) + 1 == alignment_length  (full-span)
   7.  alignment_length >= min_len  (default 18)
   8.  row must parse (>=9 tab-separated fields, numeric BLAST columns) —
-      an unparseable row can't be verified to pass, so it disqualifies its
-      candidate the same as any other failure (see row_outcome's "bad" case).
+      an unparseable top row can't be verified to pass, so it disqualifies
+      its candidate (see row_outcome's "bad" case).
 
 Relies on rows for the same query being contiguous in the input (verified:
 zero interleaved query IDs across all 60.76M rows of RJ1 mate 1) — this is
-what lets a single forward streaming pass do candidate-level filtering
+what lets a single forward streaming pass do top-hit-only filtering
 without loading the file or sorting it.
 
 The lineage column is passed through to the output unchanged so the
@@ -166,73 +170,58 @@ def main():
     total = kept = unique_queries = 0
     rm_v = rm_p = rm_h = rm_mm = rm_gap = rm_span = rm_short = bad = 0
 
-    # ── State for the CURRENT group only — this is the whole memory budget:
-    # one remembered row + one reason string + the group's own ID. Cleared
-    # and reused for every new group, never accumulates across the file.
-    #
-    # "Flushing" a group (writing its top hit, or counting its exclusion
-    # reason) happens at two points below: whenever the query ID changes
-    # (the previous group is now complete) and once more after the loop
-    # ends (the last group in the file never triggers an ID-change).
-    # Both are the same few lines, inlined rather than a shared helper —
-    # a nested closure needs `nonlocal` for every counter it touches,
-    # which was more confusing than just writing it twice.
-    current_qid   = None
-    top_row       = None   # first row seen in this group == its best hit
-    disqualified  = False
-    fail_reason   = None   # the FIRST reason this group failed, for stats
+    def tally(reason):
+        nonlocal rm_v, rm_p, rm_h, rm_mm, rm_gap, rm_span, rm_short, bad
+        if reason == "virus":         rm_v    += 1
+        elif reason == "phylum":      rm_p    += 1
+        elif reason == "host":        rm_h    += 1
+        elif reason == "mismatch":    rm_mm   += 1
+        elif reason == "gap":         rm_gap  += 1
+        elif reason == "not_fullspan":rm_span += 1
+        elif reason == "short":       rm_short+= 1
+        elif reason == "bad":         bad     += 1
+
+    # ── State for the CURRENT group only. The decision is made the moment
+    # a group's first (top) row is seen — every later row of the same
+    # group is skipped without even being parsed, since only the top hit
+    # matters now. "Flushing" (writing the kept top row, or tallying its
+    # fail reason) happens whenever the query ID changes (the previous
+    # group is complete) and once more after the loop ends (the last
+    # group never triggers an ID-change).
+    current_qid = None
+    top_row     = None   # top row's raw text, to write out if kept
+    decision    = None   # "kept" or a row_outcome() fail reason
 
     with open(args.input_tsv) as fin, open(args.output_tsv, "w") as fout:
         for line in fin:
             total += 1
-            raw = line.rstrip("\n")
-            fields = raw.split("\t")
-            qid = fields[0].strip() if fields else ""
+            fields_probe = line.split("\t", 1)
+            qid = fields_probe[0].strip() if fields_probe else ""
 
             if qid != current_qid:
                 # ── close out the PREVIOUS group (if any) ──────────────────
                 if top_row is not None:
-                    if not disqualified:
+                    if decision == "kept":
                         fout.write(top_row)
                         kept += 1
                     else:
-                        if fail_reason == "virus":        rm_v    += 1
-                        elif fail_reason == "phylum":      rm_p    += 1
-                        elif fail_reason == "host":        rm_h    += 1
-                        elif fail_reason == "mismatch":    rm_mm   += 1
-                        elif fail_reason == "gap":         rm_gap  += 1
-                        elif fail_reason == "not_fullspan":rm_span += 1
-                        elif fail_reason == "short":       rm_short+= 1
-                        elif fail_reason == "bad":         bad     += 1
-                # ── start the NEW group ─────────────────────────────────────
-                current_qid  = qid
-                top_row      = None
-                disqualified = False
-                fail_reason  = None
+                        tally(decision)
+                # ── this row IS the new group's top hit — decide now ────────
+                current_qid = qid
+                raw = line.rstrip("\n")
+                fields = raw.split("\t")
+                top_row = raw + "\n"
+                decision = row_outcome(fields, excluded, args.min_len)
                 unique_queries += 1
+            # else: not this group's top row — skip, it no longer matters
 
-            if top_row is None:
-                top_row = raw + "\n"   # first row in this group = top hit
-
-            outcome = row_outcome(fields, excluded, args.min_len)
-            if outcome != "kept" and not disqualified:
-                disqualified = True
-                fail_reason  = outcome   # remember only the FIRST failure
-
-        # ── flush the LAST group in the file (no more ID-changes to trigger it) ──
+        # ── flush the LAST group in the file ──────────────────────────────
         if top_row is not None:
-            if not disqualified:
+            if decision == "kept":
                 fout.write(top_row)
                 kept += 1
             else:
-                if fail_reason == "virus":        rm_v    += 1
-                elif fail_reason == "phylum":      rm_p    += 1
-                elif fail_reason == "host":        rm_h    += 1
-                elif fail_reason == "mismatch":    rm_mm   += 1
-                elif fail_reason == "gap":         rm_gap  += 1
-                elif fail_reason == "not_fullspan":rm_span += 1
-                elif fail_reason == "short":       rm_short+= 1
-                elif fail_reason == "bad":         bad     += 1
+                tally(decision)
 
     summary = (
         f"{Path(args.input_tsv).name}: total_rows={total} "

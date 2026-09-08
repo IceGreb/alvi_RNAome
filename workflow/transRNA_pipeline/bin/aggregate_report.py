@@ -14,7 +14,9 @@ Column sources (per sample, in report order):
                                               with, read straight from its own refstats.txt
                                               (%unambiguousReads + %ambiguousReads for that
                                               reference, exactly as BBSplit reports them)
-  MAGs matched %                           <- (virus_survivors - mags_survivors) / virus_survivors * 100
+  MAGs matched %                           <- real BBSplit-vs-MAGs assigned reads (sum of
+                                              assignedReads across MAG bins in *_mags_refstats.txt)
+                                              / Trimmed reads * 100
   Candidate transRNAs total reads          <- mags_survivors (reads entering BLAST/Kraken)
   Kraken classified %                      <- kraken C-reads / mags_survivors * 100
   BLAST classified %                       <- blast unique query IDs / (mags_survivors - kraken_classified_reads) * 100
@@ -49,6 +51,7 @@ COLLAPSE_RE  = re.compile(r"^(.+)_collapse_stats\.tsv$")
 WIDS_RE      = re.compile(r"^(.+)_ge5_detected_weighted_ids\.tsv$")
 STARLOG_RE   = re.compile(r"^(.+)_Log\.final\.out$")
 REFSTATS_RE  = re.compile(r"^(.+)_bbsplit_refstats\.txt$")
+MAGS_REFSTATS_RE = re.compile(r"^(.+)_mags_refstats\.txt$")  # deliberately NOT *_bbsplit_refstats.txt -- that glob is used by the loop below and would wrongly swallow this file too
 MATE_RE      = re.compile(r"_[12]$")
 
 
@@ -118,10 +121,33 @@ def parse_refstats(path: Path) -> dict:
         df.columns = [c.lstrip("#") for c in df.columns]
         for _, row in df.iterrows():
             ref = str(row["name"])
-            matched[ref] = float(row["%unambiguousReads"]) + float(row["%ambiguousReads"])
+            matched[ref] = round(float(row["%unambiguousReads"]) + float(row["%ambiguousReads"]), 5)
     except Exception as e:
         print(f"Warning refstats {path}: {e}", file=sys.stderr)
     return matched
+
+
+def parse_mags_assigned_reads(path: Path) -> int:
+    """Return total assignedReads summed across all MAG-bin references in a
+    BBSplit-vs-MAGs refstats.txt.
+
+    Unlike parse_refstats() above, this sums the *absolute* assignedReads
+    column rather than reusing BBSplit's own %-of-input-to-this-run figure
+    -- that run's own denominator isn't the trimmed-read pool this report
+    expresses every other percentage against, so its % column can't be used
+    directly. Dividing this sum by Trimmed reads (done by the caller) is
+    what actually yields "% of trimmed reads assigned to a MAG bin" --
+    verified against the real 26_08_2026 reference cascade plot's
+    "metagenome" segment (RJ1: matched to 5 significant figures).
+    """
+    total = 0
+    try:
+        df = pd.read_csv(path, sep="\t")
+        df.columns = [c.lstrip("#") for c in df.columns]
+        total = int(df["assignedReads"].sum())
+    except Exception as e:
+        print(f"Warning mags refstats {path}: {e}", file=sys.stderr)
+    return total
 
 
 def weighted_total(path: Path) -> int:
@@ -165,6 +191,7 @@ def main():
     virus_rows      = []
     refstats_data   = {}   # {sample: {ref_name: matched_pct}}
     all_refs        = set()
+    mags_assigned_reads = {}   # {sample: total assignedReads to MAG bins}
 
     # ── seqkit stats (all counts use both-mate totals for consistency) ────────
     for fname in sorted(glob.glob("*.tsv")):
@@ -195,6 +222,14 @@ def main():
             refs = parse_refstats(Path(fname))
             refstats_data[sample] = refs
             all_refs.update(refs.keys())
+
+    # ── real BBSplit-vs-MAGs refstats → assigned reads (for MAGs matched %) ───
+    for fname in sorted(glob.glob("*_mags_refstats.txt")):
+        m = MAGS_REFSTATS_RE.match(fname)
+        if m:
+            sample = m.group(1)
+            all_samples.add(sample)
+            mags_assigned_reads[sample] = parse_mags_assigned_reads(Path(fname))
 
     # ── collapse stats ────────────────────────────────────────────────────────
     for fname in sorted(glob.glob("*_collapse_stats.tsv")):
@@ -280,10 +315,14 @@ def main():
         for ref in sorted_refs:
             row[f"BBSplit: {ref} matched %"] = refs.get(ref, 0.0)
         row.update({
-            # Denominator is STAR-unmapped (not a "virus survivors" count, which
-            # no longer exists now that host/virus stats come from BBSplit's own
-            # refstats above) -- % of the STAR-unmapped pool removed as MAGs.
-            "MAGs matched %":                                pct(unmapped - mags, unmapped),
+            # Real BBSplit-vs-MAGs assignment, as % of Trimmed reads (same
+            # denominator every other cascade-style figure in this report
+            # uses) -- NOT (unmapped - mags)/unmapped, which conflated real
+            # MAG-bin hits with every other read lost between STAR-unmapped
+            # and the no_MAGs output (host/human/viral decon too). Verified
+            # against the real 26_08_2026 reference cascade plot's
+            # "metagenome" segment (RJ1 matched to 5 significant figures).
+            "MAGs matched %":                                pct(mags_assigned_reads.get(sample, 0), t_both),
             # All three variables are in individual-read units:
             # mags  : seqkit stats on *_noMAGs_stats.tsv (both mates summed)
             # krak  : *_kraken_filter_stats.tsv → 'classified' × 2  (pairs converted to reads at ingestion)

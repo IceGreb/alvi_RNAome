@@ -7,11 +7,14 @@ Annotates a Kraken2 output file with an 8-rank lineage column.
 Kraken field 3 looks like: "Eukaryota (taxid 2759)"
 taxonkit needs a plain integer taxid, so this script:
 
-  1. Reads all lines, extracts taxid from the "(taxid N)" pattern in field 3
+  1. Reads the file once, extracts taxid from the "(taxid N)" pattern in
+     field 3, and keeps only the set of unique non-zero taxids -- not the
+     lines themselves (a multi-GB Kraken output shouldn't need a matching
+     multi-GB buffer just to re-emit the same lines with one extra column).
   2. Writes a temp file of unique taxids (one per line, plain integers)
   3. Runs: taxonkit reformat2 -I 1 -f '{...}' <tmpfile>
-  4. Maps lineage strings back to original rows by taxid
-  5. Writes: original_row + TAB + lineage
+  4. Re-reads the file a second time, mapping each row's taxid to its
+     resolved lineage and writing directly to output.
 
 Output lineage column (semicolon-delimited):
   Domain;Kingdom;Phylum;Class;Order;Family;Genus;Species
@@ -53,21 +56,22 @@ def main():
     ap.add_argument("--output", required=True, help="Annotated output TSV")
     args = ap.parse_args()
 
-    # ── Pass 1: collect lines and taxids ─────────────────────────────────────
+    # ── Pass 1: collect only the unique taxid vocabulary ──────────────────────
     log(f"Pass 1: reading {args.input}")
-    lines = []
-    line_taxids = []
+    unique_taxids = set()
+    total_lines = 0
 
     with open(args.input) as fh:
         for line in fh:
-            raw = line.rstrip("\n")
-            lines.append(raw)
-            fields = raw.split("\t")
-            tid = extract_taxid(fields[2]) if len(fields) >= 3 else 0
-            line_taxids.append(tid)
+            total_lines += 1
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) >= 3:
+                tid = extract_taxid(fields[2])
+                if tid:
+                    unique_taxids.add(tid)
 
-    unique_taxids = sorted({t for t in line_taxids if t != 0})
-    log(f"  {len(lines)} lines, {len(unique_taxids)} unique non-zero taxids")
+    unique_taxids = sorted(unique_taxids)
+    log(f"  {total_lines} lines, {len(unique_taxids)} unique non-zero taxids")
 
     # ── Run taxonkit reformat2 on unique taxids ───────────────────────────────
     log("Running taxonkit reformat2...")
@@ -112,12 +116,17 @@ def main():
 
     log(f"  {len(lineage_map)} lineages resolved")
 
-    # ── Pass 2: annotate and write output ─────────────────────────────────────
+    # ── Pass 2: re-read the file, write annotated output ──────────────────────
+    # Re-reads from disk rather than replaying a buffered line list from
+    # Pass 1 -- see module docstring.
     log(f"Pass 2: writing {args.output}")
     no_lineage = 0
 
-    with open(args.output, "w") as out:
-        for raw, tid in zip(lines, line_taxids):
+    with open(args.input) as fh, open(args.output, "w") as out:
+        for line in fh:
+            raw = line.rstrip("\n")
+            fields = raw.split("\t")
+            tid = extract_taxid(fields[2]) if len(fields) >= 3 else 0
             lineage = lineage_map.get(tid, FALLBACK)
             if not lineage:
                 lineage = FALLBACK

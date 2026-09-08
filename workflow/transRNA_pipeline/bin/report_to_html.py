@@ -4,6 +4,7 @@ report_to_html.py
 Converts pipeline_read_counts_report.tsv to styled HTML.
 """
 import csv
+import re
 import sys
 import pandas as pd
 from pathlib import Path
@@ -46,19 +47,22 @@ COL_ORDER = [
     "Sample",
     "Raw reads",
     "Trimmed",
-    "STAR mapped",
+    "STAR mapped %",
     "STAR unmapped",
-    "Decon-a: Host+Human excl.",
-    "Decon-b: 12 viral excl.",
-    "MAGs excl.",
+    # "BBSplit: {ref} matched %" columns are dynamic (one per reference
+    # genome BBSplit was run with) - spliced in here at render time.
+    "MAGs matched %",
     "Candidate transRNAs total reads",
-    "Candidate transRNAs unique sequences",
-    "Candidate transRNAs ge5 duplicates",
-    "Kraken classified total",
-    "BLAST classified total",
-    "Classified total",
-    "Total transRNAs after all filters",
+    "Kraken classified %",
+    "BLAST classified %",
+    "Classified total %",
+    "Total transRNAs after all filters %",
+    "Total transRNAs after all filters (RPM)",
+    "Transmissible RNA representative sequences %",
+    "Transmissible RNA representative sequences (RPM)",
+    "% of transRNAs with >=5 duplicates",
 ]
+BBSPLIT_RE = re.compile(r"^BBSplit: .+ matched %$")
 
 def fmt(x):
     try:
@@ -68,7 +72,10 @@ def fmt(x):
         return "" if (str(x) in ("nan","")) else str(x)
 
 def make_table(df, sample_to_group, group_css):
-    present = [c for c in COL_ORDER if c in df.columns]
+    static_cols = [c for c in COL_ORDER if c in df.columns]
+    bbsplit_cols = sorted(c for c in df.columns if BBSPLIT_RE.match(c))
+    insert_at = static_cols.index("STAR unmapped") + 1 if "STAR unmapped" in static_cols else len(static_cols)
+    present = static_cols[:insert_at] + bbsplit_cols + static_cols[insert_at:]
     th = "".join(f"<th>{c}</th>" for c in present)
     rows_html = []
     for _, row in df.iterrows():
