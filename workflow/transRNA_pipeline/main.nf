@@ -193,10 +193,7 @@ process COUNT_STAR_UNMAPPED {
 // ============================================================================
 //  BBSPLIT  (pipeline step 4)
 //  Decontaminates STAR's unmapped reads against host (bee) + human + viral
-//  references. STAR's own mapping only ever screens against the bee genome,
-//  so this catches human/viral contamination STAR alone can't -- see the
-//  synthetic-read snoRNA contamination test (31_08_2026) for validation of
-//  this exact reference set and parameters.
+//  references.
 //
 //  Only structural flags (in1/in2, ref, basename, outu1/outu2, refstats) are
 //  hard-coded here -- alignment sensitivity is left at BBSplit's own
@@ -302,7 +299,16 @@ process COLLAPSE_READS_PRE_TAXONOMY {
     script:
     """
     # ── Merge both mates of BBSplit's clean/unmatched output ──────────────────
-    cat ${bbsplit_unmatched_1} ${bbsplit_unmatched_2} > ${meta.id}_merged.fq
+    # Mate 1 and mate 2 of the same fragment share the same base read ID
+    # (Illumina's "<id> 1:N:..." / "<id> 2:N:..." convention -- the mate
+    # distinguisher lives in the description field, which every downstream
+    # ID-based lookup here strips). Tag /1 and /2 onto each mate's IDs before
+    # merging so they can never collide under one shared bare ID once
+    # collapsed -- verified previously to cause ~99% ID collision between
+    # mates when omitted.
+    awk 'NR%4==1{sub(/^\\S+/, "&/1")}1' ${bbsplit_unmatched_1} > mate1_tagged.fq
+    awk 'NR%4==1{sub(/^\\S+/, "&/2")}1' ${bbsplit_unmatched_2} > mate2_tagged.fq
+    cat mate1_tagged.fq mate2_tagged.fq > ${meta.id}_merged.fq
 
     seqkit rmdup -s \
         -j ${task.cpus} \
@@ -343,13 +349,18 @@ process COLLAPSE_READS_POST_TAXONOMY {
     # ── Extract passing IDs from Kraken filtered TSV (col 2, no header) ──────
     awk -F'\t' '{print \$2}' ${kraken_tsv} | sort -u > kraken_ids.txt
 
-    # ── Fetch sequences from trimmed reads ────────────────────────────────────
+    # ── Fetch sequences from trimmed reads, then tag /1 or /2 on the header ID ──
+    # Same mate-collision issue as COLLAPSE_READS_PRE_TAXONOMY above: mate 1
+    # and mate 2 share a bare base ID, so untagged IDs from blast1/kraken
+    # (both mate-1-sourced) and blast2 (mate-2-sourced) can collide once
+    # merged. Kraken hits are always mate-1-scoped in this pipeline (fetched
+    # from trimmed_reads[0] only), so they're tagged /1 like blast1.
     seqkit grep -j ${task.cpus} -f blast1_ids.txt \
-        ${trimmed_reads[0]} > blast1_passing.fq
+        ${trimmed_reads[0]} | awk 'NR%4==1{sub(/^\\S+/, "&/1")}1' > blast1_passing.fq
     seqkit grep -j ${task.cpus} -f blast2_ids.txt \
-        ${trimmed_reads[1]} > blast2_passing.fq
+        ${trimmed_reads[1]} | awk 'NR%4==1{sub(/^\\S+/, "&/2")}1' > blast2_passing.fq
     seqkit grep -j ${task.cpus} -f kraken_ids.txt \
-        ${trimmed_reads[0]} > kraken_passing.fq
+        ${trimmed_reads[0]} | awk 'NR%4==1{sub(/^\\S+/, "&/1")}1' > kraken_passing.fq
 
     # ── Merge and collapse ────────────────────────────────────────────────────
     cat blast1_passing.fq blast2_passing.fq kraken_passing.fq \
@@ -676,7 +687,9 @@ process PLOT_LENGTH_DIST {
 //    --ids-dir    : folder with all *_ge5_detected_ids.txt files
 //    --blast-dir  : folder with all *_blast_all_lengths_filtered.tsv files
 //    --kraken-dir : folder with all *_kraken_invertebrates_filtered.tsv files
-//    --dup-dir    : folder with all no_MAGs_*_duplicated.detail.txt files
+//    --dup-dir    : folder with all *_merged_duplicated.detail.txt files
+//                   (one per sample, from COLLAPSE_READS_{PRE,POST}_TAXONOMY;
+//                   IDs inside are /1 /2 mate-suffixed)
 //    --reads-table: reads_posttrim_tab.tsv (fresh from this run)
 //    --samplesheet: resolved (post-group-default) sample,group table
 //
@@ -700,7 +713,7 @@ process TAXONOMY_PARSER {
     path(kraken_files)
     // blast_files: all *_blast_all_lengths_filtered.tsv
     path(blast_files)
-    // dup_files: all no_MAGs_*_duplicated.detail.txt
+    // dup_files: all *_merged_duplicated.detail.txt
     path(dup_files)
     // reads table produced by MAKE_READS_POSTTRIM_TAB
     path(reads_table)
