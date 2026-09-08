@@ -782,10 +782,10 @@ process AGGREGATE_REPORT {
     path(wids_files)             // weighted_ids: for Total transRNAs after all filters
     path(sample_sheet)
     output:
-    path("pipeline_read_counts_report.tsv")
-    path("pipeline_read_counts_report.html")
-    path("dataset_summary_report.tsv")
-    path("virus_exclusion_report.tsv")
+    path("pipeline_read_counts_report.tsv"),   emit: tsv
+    path("pipeline_read_counts_report.html"),  emit: html
+    path("dataset_summary_report.tsv"),        emit: dataset_summary
+    path("virus_exclusion_report.tsv"),        emit: virus_exclusion
     script:
     """
     python3 ${moduleDir}/bin/aggregate_report.py \
@@ -798,6 +798,29 @@ process AGGREGATE_REPORT {
         pipeline_read_counts_report.tsv \
         pipeline_read_counts_report.html \
         ${sample_sheet}
+    """
+}
+
+// ============================================================================
+//  PLOT REPORT SUMMARY — two-panel cascade + classification-metrics heatmap,
+//  built from AGGREGATE_REPORT's own TSV. Group colouring/legend comes from
+//  the real sample sheet (general-purpose across any dataset).
+// ============================================================================
+
+process PLOT_REPORT_SUMMARY {
+    label 'count_only'
+    conda "${moduleDir}/config/envs/python_analysis.yaml"
+    publishDir "${params.outdir}/reports", mode: 'copy'
+    input:
+    path(report_tsv)
+    path(sample_sheet)
+    output:
+    path("*_pipeline_report_summary.png")
+    script:
+    """
+    python3 ${moduleDir}/bin/plot_report_summary.py \
+        ${report_tsv} \
+        --samplesheet ${sample_sheet}
     """
 }
 
@@ -1151,6 +1174,11 @@ workflow {
             collapse_ch.map { it[4] }.collect(),
             all_filter_stats_ch,
             all_wids_ch,
+            resolved_samplesheet_ch
+        )
+
+        PLOT_REPORT_SUMMARY(
+            AGGREGATE_REPORT.out.tsv,
             resolved_samplesheet_ch
         )
     }
