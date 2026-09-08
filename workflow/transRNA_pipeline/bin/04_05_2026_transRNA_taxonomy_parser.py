@@ -554,34 +554,41 @@ def main(args):
         print(f"\nProcessing sample: {sample} -> group {group}")
 
         ids_file = samples[sample]
-        wanted_ids = load_id_file(ids_file)
+        wanted_ids_raw = load_id_file(ids_file)
 
-        # Both mates share the same merged pool in the current pipeline.
-        wanted_1_original = wanted_ids
-        wanted_2_original = wanted_ids
+        # COLLAPSE_READS_{PRE,POST}_TAXONOMY append /1 and /2 to every read ID
+        # so mates stay distinguishable after merging (fixed 2026-09 -- prior
+        # to that, mate 1 and mate 2 of the same fragment shared one bare ID
+        # and could collide once collapsed). Split them here so each mate's
+        # BLAST/Kraken lookup uses only its own pool. BLAST/Kraken TSVs still
+        # carry the original unsuffixed read IDs, so strip the suffix before
+        # matching.
+        wanted_1_original = {rid[:-2] for rid in wanted_ids_raw if rid.endswith('/1')}
+        wanted_2_original = {rid[:-2] for rid in wanted_ids_raw if rid.endswith('/2')}
 
-        print(f"  wanted IDs: {len(wanted_ids)}")
+        print(f"  wanted IDs: {len(wanted_ids_raw)} total "
+              f"({len(wanted_1_original)} mate-1, {len(wanted_2_original)} mate-2)")
 
         total_reads = total_reads_by_sample.get(sample)
 
         if total_reads is None:
             print(f"  WARNING: {sample} not found in {reads_table}; RPM will use raw counts for this sample")
 
-        dup1_file = resolve_file(dup_dir / f"no_MAGs_{sample}_2MM_clean1_duplicated.detail.txt")
-        dup2_file = resolve_file(dup_dir / f"no_MAGs_{sample}_2MM_clean2_duplicated.detail.txt")
+        # COLLAPSE_READS_{PRE,POST}_TAXONOMY produce a single merged detail
+        # file, not separate per-mate files. The /1 and /2 suffixes on every
+        # rep_id let us reconstruct per-mate weight dicts with unsuffixed
+        # keys, matching the original IDs in the BLAST/Kraken TSVs.
+        dup_file = resolve_file(dup_dir / f"{sample}_merged_duplicated.detail.txt")
+        merged_weights = parse_dup_detail_file(dup_file)
 
-        weights_1 = parse_dup_detail_file(dup1_file)
-        weights_2 = parse_dup_detail_file(dup2_file)
+        weights_1 = {k[:-2]: v for k, v in merged_weights.items() if k.endswith('/1')}
+        weights_2 = {k[:-2]: v for k, v in merged_weights.items() if k.endswith('/2')}
 
-        if dup1_file:
-            print(f"  mate 1 duplicate detail: {dup1_file}")
+        if dup_file:
+            print(f"  duplicate detail (merged): {dup_file} "
+                  f"({len(weights_1)} mate-1 clusters, {len(weights_2)} mate-2 clusters)")
         else:
-            print("  mate 1 duplicate detail: not found, using weight 1")
-
-        if dup2_file:
-            print(f"  mate 2 duplicate detail: {dup2_file}")
-        else:
-            print("  mate 2 duplicate detail: not found, using weight 1")
+            print("  duplicate detail: not found, using weight 1 for all reads")
 
         blast1_file = resolve_file(blast_dir / f"{sample}_1_blast_all_lengths_filtered.tsv") if blast_dir else None
         blast2_file = resolve_file(blast_dir / f"{sample}_2_blast_all_lengths_filtered.tsv") if blast_dir else None
@@ -813,16 +820,17 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "Fetch selected BLAST/Kraken taxonomy results from sample_1/2_ge5_detected_ids.txt, "
-            "assign each read ID to only one tool, reinflate using clean1/clean2 duplicate detail files, "
-            "normalise by reads-per-million, and write per-sample plus per-group combined summaries."
+            "Fetch selected BLAST/Kraken taxonomy results from sample_ge5_detected_ids.txt (mate-suffixed "
+            "/1 /2 IDs from a single merged candidate pool), assign each read ID to only one tool, "
+            "reinflate using the merged duplicate detail file, normalise by reads-per-million, and write "
+            "per-sample plus per-group combined summaries."
         )
     )
 
     parser.add_argument("--ids-dir", required=True, help="Directory with sample_ge5_detected_ids.txt files")
     parser.add_argument("--blast-dir", required=False, help="Directory with corrected BLAST filtered TSV files")
     parser.add_argument("--kraken-dir", required=False, help="Directory with corrected Kraken filtered TSV files")
-    parser.add_argument("--dup-dir", required=True, help="Directory with no_MAGs_SAMPLE_2MM_clean1/clean2_duplicated.detail.txt files")
+    parser.add_argument("--dup-dir", required=True, help="Directory with SAMPLE_merged_duplicated.detail.txt files (one per sample, mate-suffixed IDs)")
     parser.add_argument("--reads-table", required=True, help="reads_posttrim_tab.tsv with Sample and TotalReads columns")
     parser.add_argument("--samplesheet", required=True, help="sample,group,fastq_1,fastq_2 sample sheet")
     parser.add_argument("--outdir", required=True, help="Output directory")
