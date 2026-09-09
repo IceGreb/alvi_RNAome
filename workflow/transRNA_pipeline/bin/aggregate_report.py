@@ -52,6 +52,10 @@ WIDS_RE      = re.compile(r"^(.+)_ge5_detected_weighted_ids\.tsv$")
 STARLOG_RE   = re.compile(r"^(.+)_Log\.final\.out$")
 REFSTATS_RE  = re.compile(r"^(.+)_bbsplit_refstats\.txt$")
 MAGS_REFSTATS_RE = re.compile(r"^(.+)_mags_refstats\.txt$")  # deliberately NOT *_bbsplit_refstats.txt -- that glob is used by the loop below and would wrongly swallow this file too
+# Legacy naming for datasets whose BBSplit-vs-MAGs step predates BBSPLIT_MAGS
+# (skip_bbsplit_mags=true fallback, see params.config's bbsplit_mags_dir) --
+# same refstats.txt column shape, just BBTools' own default output name.
+MAGS_REFSTATS_LEGACY_RE = re.compile(r"^(.+)_2MM_clean_no_MAGs_bbsplit_results\.tsv$")
 MATE_RE      = re.compile(r"_[12]$")
 
 
@@ -225,8 +229,8 @@ def main():
             all_refs.update(refs.keys())
 
     # ── real BBSplit-vs-MAGs refstats → assigned reads (for MAGs matched %) ───
-    for fname in sorted(glob.glob("*_mags_refstats.txt")):
-        m = MAGS_REFSTATS_RE.match(fname)
+    for fname in sorted(glob.glob("*_mags_refstats.txt")) + sorted(glob.glob("*_2MM_clean_no_MAGs_bbsplit_results.tsv")):
+        m = MAGS_REFSTATS_RE.match(fname) or MAGS_REFSTATS_LEGACY_RE.match(fname)
         if m:
             sample = m.group(1)
             all_samples.add(sample)

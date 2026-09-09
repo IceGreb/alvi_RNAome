@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import csv
+import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -9,6 +10,24 @@ import colorsys
 from datetime import date
 import matplotlib.ticker as mticker
 from matplotlib import gridspec
+
+# No real Helvetica font is installed on this system, so this uses Nimbus
+# Sans -- a metrics-compatible clone, and the same substitution fontconfig
+# itself makes for "Helvetica" at the OS level (`fc-match Helvetica` ->
+# NimbusSans-Regular.otf).
+plt.rcParams["font.family"] = "Nimbus Sans"
+
+# matplotlib's SVG default (svg.fonttype="path") converts every glyph to a
+# vector outline, which is portable but is why Inkscape/Illustrator see
+# shapes instead of editable text. "none" keeps real <text> elements
+# referencing the font by name, at the cost of needing that font installed
+# wherever the SVG is opened -- same convention as plot_report_summary.py.
+plt.rcParams["svg.fonttype"] = "none"
+
+# Uniform 5pt text (matches plot_size_distr_v2.py) -- the explicit fontsize=
+# overrides this script used to have (title/rank labels/tick labels/percentage
+# annotations) are removed below rather than left to silently win over this.
+plt.rcParams["font.size"] = 5
 
 # ---------- Fixed special colors ----------
 OTHER_COLOR = "#c7c7c7"         # Other
@@ -108,6 +127,29 @@ def read_top10_files(top10_dir):
             data[dataset] = {}
         data[dataset][rank] = df
     return data
+
+def load_kingdom_lookup(path):
+    """Order -> Kingdom, keyed by normalised (lowercased) Order name -- used
+    to annotate Order-rank bars with their Kingdom (e.g. "12.3% (Bacteria)").
+
+    The per-rank top10.tsv files (read_top10_files below) only ever carry
+    Taxonomy+Count for a single rank each, so there's no Order-to-Kingdom
+    link left in them -- that link exists only transiently while the
+    taxonomy parser walks each read's full lineage string. Optional: if path
+    is None or doesn't exist (e.g. no such lookup wired into this run at
+    all), the annotation is simply skipped -- not a required input.
+    """
+    if path is None or not os.path.exists(path):
+        return {}
+    lookup = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            order, kingdom = parts[0], parts[1]
+            lookup[_norm_key(order)] = kingdom
+    return lookup
 
 def load_samplesheet_groups(path):
     """Return the distinct group labels from a sample,group,... sample sheet,
@@ -252,20 +294,36 @@ def build_rank_palettes(data_by_ds_rank):
 
 # ------------------ Plot (aligned & VERTICAL rank titles) ------------------
 
-def plot_multi_panel(data, rank_palettes, datasets, ranks, outfile, x_break_point=2.5):
+def plot_multi_panel(data, rank_palettes, datasets, ranks, outfile, x_break_point=2.5, order_kingdom=None):
     """
     Generates a multi-panel plot with horizontal bar charts and a broken x-axis.
     Ensures within each rank, color uniqueness across datasets.
     Row titles (Domain/Kingdom/Order/Species) are aligned left and drawn VERTICALLY.
     """
+    order_kingdom = order_kingdom or {}
     n_rows = len(ranks)
     n_cols = len(datasets)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7 * n_cols, 3.5 * n_rows), squeeze=False)
+    # Per-panel size (3.5x1.75in) matches the uniform 5pt text set above --
+    # the previous 7x3.5in/panel sizing was tuned for the old per-element
+    # fontsize overrides.
+    fig = plt.figure(figsize=(3.5 * n_cols, 1.75 * n_rows))
+
+    # Row heights follow how many bars each rank actually needs (Domain has
+    # as few as 4, Order/Species as many as 10-12) instead of splitting the
+    # figure into equal rows -- equal rows leave Domain/Kingdom half-empty
+    # while Order/Species's labels, crammed into the same space, overlap.
+    max_items_per_rank = []
+    for rank in ranks:
+        counts = [len(data[ds][rank]) for ds in datasets
+                  if data.get(ds, {}).get(rank) is not None and not data[ds][rank].empty]
+        max_items_per_rank.append(max(counts) if counts else 1)
+    outer_gs = gridspec.GridSpec(n_rows, n_cols, figure=fig, height_ratios=max_items_per_rank)
+    axes = [[fig.add_subplot(outer_gs[i, j]) for j in range(n_cols)] for i in range(n_rows)]
 
     for i, rank in enumerate(ranks):
         palette = rank_palettes.get(rank, {})
         for j, dataset in enumerate(datasets):
-            placeholder_ax = axes[i, j]
+            placeholder_ax = axes[i][j]
             placeholder_ax.axis('off')
 
             df = data.get(dataset, {}).get(rank)
@@ -304,8 +362,14 @@ def plot_multi_panel(data, rank_palettes, datasets, ranks, outfile, x_break_poin
                 if pct > x_break_point:
                     ax2.barh(idx, pct - x_break_point, left=x_break_point, color=color, height=0.8, zorder=2)
 
-                ax2.text(min(max(pct, x_break_point) + 0.5, 99.0), idx, f"{pct:.2f}%",
-                         va="center", fontsize=7, zorder=10, clip_on=False)
+                label = f"{pct:.2f}%"
+                if rank == "Order" and key not in ("other", "unassigned", "unclassified"):
+                    kingdom = order_kingdom.get(key)
+                    if kingdom and _norm_key(kingdom) not in ("other", "unassigned", "unclassified"):
+                        label += f" ({kingdom})"
+
+                ax2.text(min(max(pct, x_break_point) + 0.5, 99.0), idx, label,
+                         va="center", zorder=10, clip_on=False)
 
             ax1.set_xlim(0, x_break_point)
             ax2.set_xlim(x_break_point, 100)
@@ -319,13 +383,13 @@ def plot_multi_panel(data, rank_palettes, datasets, ranks, outfile, x_break_poin
             ax2.xaxis.set_major_locator(mticker.MaxNLocator(integer=True, nbins=5, prune='lower'))
 
             ax1.set_yticks(range(len(df)))
-            ax1.set_yticklabels(df["Display"], fontsize=9)
+            ax1.set_yticklabels(df["Display"])
             ax1.tick_params(axis='y', length=0)
 
             # (do not set per-axes ylabel)
 
             if i == 0:
-                ax1.set_title(dataset, x=2.5, y=1.05, fontsize=14)
+                ax1.set_title(dataset, x=2.5, y=1.05)
             if i == len(ranks) - 1:
                 ax1.set_xlabel(" ")
                 ax2.set_xlabel(" ")
@@ -334,23 +398,32 @@ def plot_multi_panel(data, rank_palettes, datasets, ranks, outfile, x_break_poin
     fig.canvas.draw()
     left_x = 0.03  # figure coordinates
     for i, rank in enumerate(ranks):
-        pos = axes[i, 0].get_position()
+        pos = axes[i][0].get_position()
         y_center = pos.y0 + pos.height / 2.0
         # rotation=90 to keep the original vertical look
-        fig.text(left_x, y_center, rank, va='center', ha='center', fontsize=12, rotation=90)
+        fig.text(left_x, y_center, rank, va='center', ha='center', rotation=90)
 
-    fig.supxlabel("Percentage (%)", fontsize=12, y=0.03)
+    fig.supxlabel("Percentage (%)", y=0.03)
     # leave room on the left for vertical row titles
     plt.tight_layout(rect=[0.085, 0.05, 1, 0.97])
-    plt.savefig(outfile, dpi=300)
+    # outfile is a base path with no extension -- write both real, editable
+    # vector formats (svg.fonttype="none" above keeps SVG text as live
+    # <text>, not outlined paths; PDF is matplotlib-native, no extra step).
+    plt.savefig(f"{outfile}.svg", dpi=300)
+    plt.savefig(f"{outfile}.pdf", dpi=300)
     plt.close()
 
 # ------------------ Main ------------------
 
-def main(top10_dir, outdir, pct_threshold=0.1, max_normals=10, x_break_point=2.5, samplesheet=None):
+def main(top10_dir, outdir, pct_threshold=0.1, max_normals=10, x_break_point=2.5, samplesheet=None,
+         order_kingdom_lookup=None):
     os.makedirs(outdir, exist_ok=True)
 
     known_groups = load_samplesheet_groups(samplesheet) if samplesheet else None
+
+    order_kingdom = load_kingdom_lookup(order_kingdom_lookup)
+    if order_kingdom:
+        print(f"Loaded {len(order_kingdom)} Order->Kingdom mappings from {order_kingdom_lookup}", file=sys.stderr)
 
     data_raw = read_top10_files(top10_dir)
     data_merged = merge_long_short(data_raw, known_groups)
@@ -367,8 +440,9 @@ def main(top10_dir, outdir, pct_threshold=0.1, max_normals=10, x_break_point=2.5
     desired_datasets = sorted(data_merged.keys())
 
     today = date.today().strftime("%d_%m_%Y")
-    outfile = os.path.join(outdir, f"{today}_ge5_taxonomy_top10.png")
-    plot_multi_panel(data_merged, rank_palettes, desired_datasets, RANKS, outfile, x_break_point=x_break_point)
+    outfile = os.path.join(outdir, f"{today}_ge5_taxonomy_top10")  # extension added in plot_multi_panel
+    plot_multi_panel(data_merged, rank_palettes, desired_datasets, RANKS, outfile,
+                      x_break_point=x_break_point, order_kingdom=order_kingdom)
 
 if __name__ == "__main__":
     import argparse
@@ -385,6 +459,10 @@ if __name__ == "__main__":
     parser.add_argument("--samplesheet", required=False,
                          help="sample,group,fastq_1,fastq_2 sample sheet; used to recover group "
                               "labels from top10 filenames when a group name contains underscores")
+    parser.add_argument("--order-kingdom-lookup", default=None,
+                         help="Optional Order->Kingdom TSV for the Order panel's '(Kingdom)' "
+                              "annotations -- skipped entirely if not given")
     args = parser.parse_args()
     main(args.top10_dir, args.outdir, pct_threshold=args.threshold, max_normals=args.max_normals,
-         x_break_point=args.xbreak, samplesheet=args.samplesheet)
+         x_break_point=args.xbreak, samplesheet=args.samplesheet,
+         order_kingdom_lookup=args.order_kingdom_lookup)

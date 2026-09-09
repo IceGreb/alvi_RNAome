@@ -238,9 +238,44 @@ process COUNT_BBSPLIT_MAGS {
     script:
     """
     seqkit stats -T -j ${task.cpus} \
-        ${params.bbsplit_mags_dir}/no_MAGs_${meta.id}_2MM_clean1.fq \
-        ${params.bbsplit_mags_dir}/no_MAGs_${meta.id}_2MM_clean2.fq \
+        ${params.bbsplit_mags_dir}/no_MAGs/no_MAGs_${meta.id}_2MM_clean1.fq \
+        ${params.bbsplit_mags_dir}/no_MAGs/no_MAGs_${meta.id}_2MM_clean2.fq \
         > ${meta.id}_noMAGs_stats.tsv
+    """
+}
+
+// ============================================================================
+//  BBSPLIT_MAGS  (pipeline step 4b)
+//  Decontaminates BBSPLIT's unmatched reads against MAG reference genomes.
+//  Chained after BBSPLIT -- only runs for real under skip_bbsplit_mags=false
+//  (defaults true: no real MAG assembly/binning process exists in this
+//  pipeline yet, see mag_genomes_fasta in params.config). Structurally
+//  identical to BBSPLIT itself, just a second decon stage against a
+//  different reference set.
+// ============================================================================
+
+process BBSPLIT_MAGS {
+    tag "${meta.id}"
+    label 'high'
+    conda "${moduleDir}/config/envs/bbsplit.yaml"
+    publishDir "${params.outdir}/bbsplit_mags", mode: 'copy',
+        pattern: params.bbsplit_keep_matched ? "*" : "*_unmatched_{1,2}.fq,*_refstats.txt"
+    input:  tuple val(meta), path(clean_reads)   // BBSPLIT.out.unmatched: [mate1, mate2]
+    output:
+    tuple val(meta), path("${meta.id}_bbsplit_mags_unmatched_1.fq"), path("${meta.id}_bbsplit_mags_unmatched_2.fq"), emit: unmatched
+    // Named {sample}_mags_refstats.txt (not *_bbsplit_mags_refstats.txt) to
+    // match aggregate_report.py's MAGS_REFSTATS_RE capture exactly -- see
+    // the skip_bbsplit_mags=true fallback branch below, which has to match
+    // the same contract.
+    tuple val(meta), path("${meta.id}_mags_refstats.txt"),                                                          emit: refstats
+    script:
+    """
+    bbsplit.sh in1=${clean_reads[0]} in2=${clean_reads[1]} \
+        ref=${params.mag_genomes_fasta} \
+        basename=${meta.id}_bbsplit_mags_%.fq \
+        outu1=${meta.id}_bbsplit_mags_unmatched_1.fq outu2=${meta.id}_bbsplit_mags_unmatched_2.fq \
+        refstats=${meta.id}_mags_refstats.txt \
+        ${params.bbsplit_extra_args}
     """
 }
 
@@ -749,7 +784,8 @@ process PLOT_TAXONOMY {
     publishDir "${params.outdir}/plots", mode: 'copy'
     input:  path(top10_tsvs)
             path(sample_sheet)
-    output: path("*.png")
+    output: path("*.svg")
+            path("*.pdf")
     script:
     """
     python3 ${moduleDir}/bin/plot_top10_taxa_global_colors.py \
@@ -776,6 +812,8 @@ process AGGREGATE_REPORT {
     path(star_stats)
     path(star_logs)              // Log.final.out files for STAR mapped %
     path(bbsplit_refstats)       // raw BBSPLIT refstats.txt, one per sample
+    path(mags_refstats)          // raw BBSPLIT_MAGS refstats.txt (or pre-computed
+                                  // equivalent), one per sample -- may be empty
     path(nomags_stats)
     path(collapse_stats)
     path(all_filter_stats_ch)   // filter stats: contains classified counts pre-filter
@@ -815,7 +853,10 @@ process PLOT_REPORT_SUMMARY {
     path(report_tsv)
     path(sample_sheet)
     output:
-    path("*_pipeline_report_summary.png")
+    path("*_pipeline_report_summary.svg")
+    path("*_pipeline_report_summary.pdf")
+    path("*_pipeline_report_heatmap.svg")
+    path("*_pipeline_report_heatmap.pdf")
     script:
     """
     python3 ${moduleDir}/bin/plot_report_summary.py \
@@ -889,14 +930,19 @@ workflow {
     //
     // The fallback file() lookups below are only actually required by real
     // downstream consumers of star_out_ch: BBSPLIT needs the reads (only when
-    // it's going to run for real, i.e. !skip_bbsplit), COUNT_STAR_UNMAPPED
-    // needs the log (only when !skip_count_reports). When neither applies
-    // (e.g. collapse_mode=post_taxonomy with skip_bbsplit+skip_count_reports
-    // both true — STAR's output is never consumed at all), skip_star=true
-    // needs no star_dir and no placeholder files: the whole point of
-    // "skipped" is that it's not required, not "required from a directory
-    // you don't run the tool for."
-    def need_star_reads = !params.skip_bbsplit
+    // it's going to run for real, i.e. !skip_bbsplit) AND COUNT_STAR_UNMAPPED
+    // separately needs them too (seqkit stats on the actual reads, for the
+    // "STAR unmapped" report column -- !skip_count_reports) -- missed this
+    // second consumer originally, which silently fed seqkit an empty file
+    // list (real bug, caught via a real 9-sample run: "STAR unmapped" came
+    // out 0 for every sample with skip_bbsplit=true+skip_count_reports=false).
+    // need_star_log follows the same !skip_count_reports need. When neither
+    // applies (e.g. collapse_mode=post_taxonomy with skip_bbsplit+
+    // skip_count_reports both true — STAR's output is never consumed at
+    // all), skip_star=true needs no star_dir and no placeholder files: the
+    // whole point of "skipped" is that it's not required, not "required
+    // from a directory you don't run the tool for."
+    def need_star_reads = !params.skip_bbsplit || !params.skip_count_reports
     def need_star_log   = !params.skip_count_reports
 
     if (!params.skip_star) {
@@ -953,6 +999,28 @@ workflow {
         bbsplit_refstats_ch = need_bbsplit_refstats ? samples_ch.map { meta ->
             file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_refstats.txt", checkIfExists: true)
         }.collect() : Channel.empty()
+    }
+
+    // ── Decontamination vs MAGs (BBSplit) — pipeline step 4b ──────────────────
+    // Skippable via skip_bbsplit_mags (defaults true, see params.config).
+    // When enabled for real, chains after BBSPLIT and its output replaces
+    // bbsplit_out_ch for COLLAPSE_READS_PRE_TAXONOMY below -- nothing further
+    // downstream needs to change. mags_refstats_ch feeds AGGREGATE_REPORT's
+    // "MAGs matched %" column; when skipped it falls back to bbsplit_mags_dir's
+    // pre-computed refstats-shaped file, soft-optional (existence-checked, not
+    // required) so a default run with no MAG data at all still works.
+    def need_mags_refstats = !params.skip_count_reports
+
+    if (!params.skip_bbsplit_mags) {
+        BBSPLIT_MAGS(bbsplit_out_ch)
+        bbsplit_out_ch   = BBSPLIT_MAGS.out.unmatched
+        mags_refstats_ch = BBSPLIT_MAGS.out.refstats.map { it[1] }.collect()
+    } else {
+        mags_refstats_ch = need_mags_refstats ? samples_ch
+            .map { meta -> file("${params.bbsplit_mags_dir}/${meta.id}_2MM_clean_no_MAGs_bbsplit_results.tsv") }
+            .filter { it.exists() }
+            .collect()
+            : Channel.empty()
     }
 
     // ── Read count reports at every pre-computed step ─────────────────────────
@@ -1170,21 +1238,30 @@ workflow {
         // (A group with only one sample has no combined file at all — the
         // taxonomy parser skips it since the per-sample file already covers
         // it; see 04_05_2026_transRNA_taxonomy_parser.py.)
-        group_labels_ch = samples_ch
-            .map    { meta -> meta.group.toString() }
+        // group_labels needed as a plain Groovy value inside a single-arg
+        // filter{} closure below -- two unsafe attempts already ruled out on
+        // a real run: (1) .combine()-ing a List-valued channel silently
+        // flattens that list into the outer tuple (filter{f, groups -> ...}
+        // got one 3-element [f, RJ, ST] instead of (f, [RJ, ST])); (2) .val
+        // to resolve it synchronously via the channel DEADLOCKED for real
+        // (blocking read before the dataflow network starts running --
+        // caught because it hung with zero Slurm jobs submitted). Real fix:
+        // samplesheetToList() is a plain synchronous Groovy call (see
+        // ch_samplesheet above, itself just Channel.fromList() wrapping its
+        // already-materialized return value) -- call it again directly,
+        // no channel/reactive machinery involved at all.
+        group_labels = samplesheetToList(params.sample_sheet, "${moduleDir}/assets/schema_input.json")
+            .collect { meta, fastq_1, fastq_2 -> resolveGroup(meta) }
             .unique()
-            .collect()
 
         top10_label_re = ~/^(.+)_(blast|kraken|combined)_(Domain|Kingdom|Order|Species)_top10\.tsv$/
 
         top10_for_plot_ch = taxonomy_ch.top10_tsvs
             .flatten()
-            .combine(group_labels_ch)
-            .filter  { f, groups ->
+            .filter  { f ->
                 def m = f.name =~ top10_label_re
-                m.matches() && groups.contains(m.group(1))
+                m.matches() && group_labels.contains(m.group(1))
             }
-            .map     { f, groups -> f }
             .collect()
 
         PLOT_TAXONOMY(top10_for_plot_ch, resolved_samplesheet_ch)
@@ -1204,6 +1281,7 @@ workflow {
             star_ch   .map { it[1] }.collect(),
             star_ch   .map { it[2] }.collect(),
             bbsplit_refstats_ch,
+            mags_refstats_ch,
             nomags_ch .map { it[1] }.collect(),
             collapse_ch.map { it[4] }.collect(),
             all_filter_stats_ch,
