@@ -186,6 +186,7 @@ def main():
     merged_reads    = {}   # reads in merged.fq before rmdup
     kraken_counts   = defaultdict(int)
     blast_unique    = defaultdict(int)
+    invert_counts   = defaultdict(int)   # reads discarded as invertebrate/host/virus by Kraken or BLAST
     final_trans     = defaultdict(int)
     all_samples     = set()
     virus_rows      = []
@@ -262,12 +263,24 @@ def main():
                     # Each Kraken line = 1 read pair; ×2 converts to individual reads
                     # to match mags (seqkit, both mates) and blast (unique_queries per mate).
                     kraken_counts[sample] += int(row.get("classified", 0)) * 2
+                    # Kraken-committed "bad hit" reads (virus/host/invertebrate)
+                    # never reach BLAST (Kraken parsed first), so these and
+                    # BLAST's own rm_* below are disjoint -- straight sum, no
+                    # dedup needed (verified exhaustively earlier this project).
+                    invert_counts[sample] += (
+                        int(row.get("rm_virus", 0)) + int(row.get("rm_host", 0)) +
+                        int(row.get("rm_invertebrate", 0))
+                    ) * 2
                 elif tool == "blast":
                     # Blast filter_stats sample field is "RJ1_1" / "RJ1_2";
                     # strip mate suffix to match the base sample name.
                     sample = MATE_RE.sub("", raw_sample)
                     all_samples.add(sample)
                     blast_unique[sample] += int(row.get("unique_queries", 0))
+                    invert_counts[sample] += (
+                        int(row.get("rm_virus", 0)) + int(row.get("rm_phylum", 0)) +
+                        int(row.get("rm_host", 0))
+                    )
 
                 virus_rows.append({
                     "Dataset": infer_group(raw_sample, sample_to_group),
@@ -323,6 +336,13 @@ def main():
             # against the real 26_08_2026 reference cascade plot's
             # "metagenome" segment (RJ1 matched to 5 significant figures).
             "MAGs matched %":                                pct(mags_assigned_reads.get(sample, 0), t_both),
+            # Reads Kraken/BLAST discarded as virus/host/invertebrate, as %
+            # of Trimmed -- same denominator convention as every other
+            # cascade segment. Kraken-committed bad-hit reads never reach
+            # BLAST (Kraken runs first), so the two sources are structurally
+            # disjoint and can be summed directly (verified exhaustively
+            # earlier this project: 0 overlap on a real sample).
+            "Invertebrates matched %":                       pct(invert_counts.get(sample, 0), t_both),
             # All three variables are in individual-read units:
             # mags  : seqkit stats on *_noMAGs_stats.tsv (both mates summed)
             # krak  : *_kraken_filter_stats.tsv → 'classified' × 2  (pairs converted to reads at ingestion)
