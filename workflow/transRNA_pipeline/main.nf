@@ -669,14 +669,14 @@ process PUBLISH_HISTS {
 
 process PLOT_LENGTH_DIST {
     label 'count_only'
-    conda "${moduleDir}/config/envs/python_analysis.yaml"
+    conda "${moduleDir}/config/envs/r_ggplot.yaml"
     publishDir "${params.outdir}/plots", mode: 'copy'
     input:  path(hist_files)
             path(sample_sheet)
-    output: path("*.png")          // ← collect all PNGs (both plots)
+    output: path("*.svg")
     script:
     """
-    python3 ${moduleDir}/bin/plot_lengths.py . --samplesheet ${sample_sheet}
+    Rscript ${moduleDir}/bin/plot_lengths_R.R . --samplesheet ${sample_sheet} --outdir .
     """
 }
 
@@ -842,9 +842,18 @@ workflow {
     samples_full_ch = ch_samplesheet                                // (meta, [fastq_1, fastq_2])
     samples_ch      = samples_full_ch.map { meta, reads -> meta }   // meta only
 
-        resolved_samplesheet_ch = Channel.value("sample,group")
-        .concat(samples_ch.map { meta -> "${meta.id},${meta.group}" })
-        .collectFile(name: "resolved_samplesheet.csv", newLine: true)
+    // Built as one atomic string (header + all rows, header guaranteed
+    // first) instead of Channel.value(header).concat(rows) -- concat's
+    // documented ordering was not actually honoured through collectFile in
+    // practice (caught for real: the header line landed *after* the one
+    // data row in a live run), silently producing a CSV every downstream
+    // --samplesheet reader (PLOT_LENGTH_DIST, PLOT_TAXONOMY,
+    // AGGREGATE_REPORT, PLOT_REPORT_SUMMARY) would mis-parse.
+    resolved_samplesheet_ch = samples_ch
+        .map { meta -> "${meta.id},${meta.group}" }
+        .collect()
+        .map { rows -> (["sample,group"] + rows).join("\n") + "\n" }
+        .collectFile(name: "resolved_samplesheet.csv")
         .first()
 
     // ── Raw-read QC (FastQC) ───────────────────────────────────────────────────
@@ -877,6 +886,19 @@ workflow {
     // ── Host-genome alignment (STAR) ──────────────────────────────────────────
     // Skippable via skip_star — falls back to pre-computed unmapped reads
     // already in params.star_dir, matching {sample}/{sample}_Unmapped.out.mate{1,2}.
+    //
+    // The fallback file() lookups below are only actually required by real
+    // downstream consumers of star_out_ch: BBSPLIT needs the reads (only when
+    // it's going to run for real, i.e. !skip_bbsplit), COUNT_STAR_UNMAPPED
+    // needs the log (only when !skip_count_reports). When neither applies
+    // (e.g. collapse_mode=post_taxonomy with skip_bbsplit+skip_count_reports
+    // both true — STAR's output is never consumed at all), skip_star=true
+    // needs no star_dir and no placeholder files: the whole point of
+    // "skipped" is that it's not required, not "required from a directory
+    // you don't run the tool for."
+    def need_star_reads = !params.skip_bbsplit
+    def need_star_log   = !params.skip_count_reports
+
     if (!params.skip_star) {
         STAR(trimmed_reads_ch)
         star_out_ch = STAR.out.unmapped
@@ -886,39 +908,51 @@ workflow {
         if (!params.skip_fastqc) {
             MULTIQC('03_star', STAR.out.log_final.map { meta, log -> log }.collect())
         }
-    } else {
+    } else if (need_star_reads || need_star_log) {
         star_out_ch = samples_ch.map { meta ->
             tuple(meta,
-                [
+                need_star_reads ? [
                     file("${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate1", checkIfExists: true),
                     file("${params.star_dir}/${meta.id}/${meta.id}_Unmapped.out.mate2", checkIfExists: true)
-                ],
-                file("${params.star_dir}/${meta.id}/Log.final.out", checkIfExists: true)
+                ] : [],
+                need_star_log ? file("${params.star_dir}/${meta.id}/Log.final.out", checkIfExists: true) : []
             )
         }
+    } else {
+        // Nothing downstream will ever read star_out_ch in this run's
+        // configuration -- don't require star_dir to exist at all.
+        star_out_ch = Channel.empty()
     }
 
     // ── Decontamination (BBSplit) — pipeline step 4 ───────────────────────────
     // Skippable via skip_bbsplit — falls back to pre-computed unmatched reads
     // already in params.bbsplit_dir, matching
     // {sample}/{sample}_bbsplit_unmatched_{1,2}.fq.
-    // Consumed downstream by COLLAPSE_READS_PRE_TAXONOMY (see the COLLAPSE
-    // READS comment block below) when params.collapse_mode == "pre_taxonomy".
+    //
+    // Same conditional-requirement logic as STAR above: the unmatched reads
+    // are only consumed by COLLAPSE_READS_PRE_TAXONOMY (collapse_mode ==
+    // "pre_taxonomy"), refstats only by AGGREGATE_REPORT (!skip_count_reports).
+    // Under collapse_mode=post_taxonomy with skip_count_reports=true, neither
+    // applies and bbsplit_dir isn't required at all.
+    def need_bbsplit_reads    = params.collapse_mode == "pre_taxonomy"
+    def need_bbsplit_refstats = !params.skip_count_reports
+
     if (!params.skip_bbsplit) {
         bbsplit_in_ch = star_out_ch.map { meta, reads, log -> tuple(meta, reads) }
         BBSPLIT(bbsplit_in_ch)
         bbsplit_out_ch      = BBSPLIT.out.unmatched
         bbsplit_refstats_ch = BBSPLIT.out.refstats.map { it[1] }.collect()
     } else {
-        bbsplit_out_ch = samples_ch.map { meta ->
+        bbsplit_out_ch = need_bbsplit_reads ? samples_ch.map { meta ->
             tuple(meta,
                 file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_unmatched_1.fq", checkIfExists: true),
                 file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_unmatched_2.fq", checkIfExists: true)
             )
-        }
-        bbsplit_refstats_ch = samples_ch.map { meta ->
+        } : Channel.empty()
+
+        bbsplit_refstats_ch = need_bbsplit_refstats ? samples_ch.map { meta ->
             file("${params.bbsplit_dir}/${meta.id}/${meta.id}_bbsplit_refstats.txt", checkIfExists: true)
-        }.collect()
+        }.collect() : Channel.empty()
     }
 
     // ── Read count reports at every pre-computed step ─────────────────────────
